@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/Gaotity/claude-statusline/main"
+REPO_RAW="https://raw.githubusercontent.com/Winn-Gaoti-Studio/claude-code-statusline/main"
 INSTALL_DIR="$HOME/.claude"
 TARGET_SETTINGS="$INSTALL_DIR/settings.json"
 TARGET_MAIN="$INSTALL_DIR/statusline.sh"
 TARGET_SUBAGENT="$INSTALL_DIR/subagent-statusline.sh"
 TARGET_HELPER="$INSTALL_DIR/lib/statusline-cache.sh"
+ORIGINAL_SETTINGS="$TARGET_SETTINGS.claude-statusline.original.bak"
+NO_ORIGINAL_SETTINGS="$TARGET_SETTINGS.claude-statusline.no-original"
 SETTINGS_BLOCK='{"statusLine":{"type":"command","command":"bash \"$HOME/.claude/statusline.sh\"","refreshInterval":30},"subagentStatusLine":{"type":"command","command":"bash \"$HOME/.claude/subagent-statusline.sh\""}}'
 
 for dependency in jq; do
@@ -45,18 +47,38 @@ install -m 644 "$TEMP_DIR/statusline-cache.sh" "$TARGET_HELPER"
 
 backup_path=""
 if [ -f "$TARGET_SETTINGS" ]; then
+  already_installed=false
+  if jq -e --argjson desired "$SETTINGS_BLOCK" '
+    .statusLine.command == $desired.statusLine.command
+    and .subagentStatusLine.command == $desired.subagentStatusLine.command
+  ' "$TARGET_SETTINGS" >/dev/null 2>&1; then
+    already_installed=true
+  fi
+  if [ ! -e "$ORIGINAL_SETTINGS" ] && [ ! -L "$ORIGINAL_SETTINGS" ] && [ ! -f "$NO_ORIGINAL_SETTINGS" ]; then
+    if [ "$already_installed" = true ]; then
+      # Older installs used timestamped backups; preserve the first one.
+      legacy_backup="$(find "$INSTALL_DIR" -maxdepth 1 -type f -name 'settings.json.[0-9]*.bak' -print | sort | head -1)"
+      if [ -n "$legacy_backup" ]; then
+        cp "$legacy_backup" "$ORIGINAL_SETTINGS"
+        backup_path="$ORIGINAL_SETTINGS"
+      fi
+    else
+      cp "$TARGET_SETTINGS" "$ORIGINAL_SETTINGS"
+      backup_path="$ORIGINAL_SETTINGS"
+    fi
+  fi
   if ! jq -e --argjson desired "$SETTINGS_BLOCK" '
     .statusLine == $desired.statusLine
     and .subagentStatusLine == $desired.subagentStatusLine
   ' "$TARGET_SETTINGS" >/dev/null 2>&1; then
-    timestamp="$(date +%Y%m%dT%H%M%S)"
-    backup_path="${TARGET_SETTINGS}.${timestamp}.bak"
-    cp "$TARGET_SETTINGS" "$backup_path"
     merged="$(mktemp)"
     jq -s '.[0] * .[1]' "$TARGET_SETTINGS" <(printf '%s\n' "$SETTINGS_BLOCK") > "$merged"
     mv "$merged" "$TARGET_SETTINGS"
   fi
 else
+  if [ ! -e "$NO_ORIGINAL_SETTINGS" ] && [ ! -L "$NO_ORIGINAL_SETTINGS" ]; then
+    : > "$NO_ORIGINAL_SETTINGS"
+  fi
   printf '%s\n' "$SETTINGS_BLOCK" | jq '.' > "$TARGET_SETTINGS"
 fi
 

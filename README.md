@@ -1,12 +1,12 @@
-# claude-statusline
+# Claude Code statusline
 
 A portable Claude Code status-line bundle with live context usage, subscription
 rate bars, worktree-aware paths, effort indicators, and custom subagent rows.
 
-The bundle is pure Bash and uses `jq`, `curl`, and `git`. It is maintained
-as a publication subset of a private chezmoi dotfiles source; this repository
-contains only the files needed to install, run, test, and document the shared
-status lines.
+This public repository is the canonical source for the three runtime scripts.
+The [shared harness](https://github.com/Gaotity/harness) pins it as a submodule
+at `components/claude-code-statusline`, and chezmoi deploys the pinned scripts.
+The bundle and its tests work independently of those repositories.
 
 ![demo](./.github/demo.png)
 
@@ -15,10 +15,12 @@ status lines.
 - `statusline.sh` renders the main Claude Code status line.
 - `subagent-statusline.sh` renders one custom row per subagent.
 - `lib/statusline-cache.sh` performs non-blocking usage refresh, credential
-  lookup, locking, and the context-usage handoff used by reminder hooks.
+  lookup, and locking.
 
-The render path only reads local state. Network refresh runs asynchronously, so
-the prompt is never blocked by the Anthropic usage endpoint.
+The render path reads local state. Network refresh runs asynchronously, so the
+prompt is never blocked by the Anthropic usage endpoint. The former context
+handoff for reminder hooks is retired; the current runtime does not write a
+context-usage file.
 
 ## Requirements
 
@@ -27,11 +29,7 @@ the prompt is never blocked by the Anthropic usage endpoint.
 - [curl](https://curl.se/)
 - Git
 
-On macOS:
-
-```bash
-brew install jq
-```
+On macOS, install `jq` with `brew install jq` if needed.
 
 ## Install
 
@@ -40,28 +38,31 @@ The installer downloads all three components, backs up an existing
 `statusLine` and `subagentStatusLine`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gaotity/claude-statusline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Winn-Gaoti-Studio/claude-code-statusline/main/install.sh | bash
 ```
 
-Restart Claude Code after installation.
-
-To uninstall:
+Restart Claude Code after installation. To uninstall:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gaotity/claude-statusline/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Winn-Gaoti-Studio/claude-code-statusline/main/uninstall.sh | bash
 ```
 
 The uninstaller restores the original settings backup when available. Without a
 backup, it removes only the two status-line keys and preserves unrelated
-settings.
+settings. The installer records the original settings once per installation;
+when no settings file existed, it records that state separately. Uninstall
+removes these bundle-owned records after restoring or updating settings.
 
 ## Manual install
 
 ```bash
 mkdir -p ~/.claude/lib
-curl -fsSL https://raw.githubusercontent.com/Gaotity/claude-statusline/main/statusline.sh -o ~/.claude/statusline.sh
-curl -fsSL https://raw.githubusercontent.com/Gaotity/claude-statusline/main/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
-curl -fsSL https://raw.githubusercontent.com/Gaotity/claude-statusline/main/lib/statusline-cache.sh -o ~/.claude/lib/statusline-cache.sh
+curl -fsSL https://raw.githubusercontent.com/Winn-Gaoti-Studio/claude-code-statusline/main/statusline.sh \
+  -o ~/.claude/statusline.sh
+curl -fsSL https://raw.githubusercontent.com/Winn-Gaoti-Studio/claude-code-statusline/main/subagent-statusline.sh \
+  -o ~/.claude/subagent-statusline.sh
+curl -fsSL https://raw.githubusercontent.com/Winn-Gaoti-Studio/claude-code-statusline/main/lib/statusline-cache.sh \
+  -o ~/.claude/lib/statusline-cache.sh
 chmod +x ~/.claude/statusline.sh ~/.claude/subagent-statusline.sh
 ```
 
@@ -81,27 +82,19 @@ Add these settings to `~/.claude/settings.json`:
 }
 ```
 
-## Maintainer sync
+## Development
 
-The chezmoi source remains canonical. The maintainer command has an explicit
-read-only check mode and an explicit write mode:
-
-```bash
-scripts/sync-from-chezmoi.sh --check
-scripts/sync-from-chezmoi.sh --write
-```
-
-Use `--source <path>` to test against a fixture or an alternate chezmoi source.
-The script reads only the three documented source files and never writes to the
-source repository.
-
-Run all repository checks before committing:
+Run all checks from this repository:
 
 ```bash
-bash tests/sync-from-chezmoi.sh
-bash tests/render.smoke.sh
-bash tests/install-uninstall.sh
+bash tests/check.sh
 ```
+
+The suite uses synthetic home directories and fake credential and network
+commands. It needs no Claude credentials, private repository, or live network
+connection. `tests/runtime.smoke.sh` carries the full runtime behavior checks;
+`tests/render.smoke.sh` provides a short render check, and
+`tests/install-uninstall.sh` covers the local installation path.
 
 ## Security
 
@@ -111,10 +104,7 @@ file, or Linux Secret Service. Tokens are passed to `curl` through a header on
 standard input and are never logged.
 
 Credentials, sessions, transcripts, caches, and machine-specific configuration
-are intentionally excluded.
-
-The repository-local `.codex/config.toml` contains only portable Codex model
-and reasoning defaults. Other Codex runtime state remains excluded.
+are excluded.
 
 ## Credits
 

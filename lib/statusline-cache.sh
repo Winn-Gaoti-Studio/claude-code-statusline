@@ -89,34 +89,6 @@ _claude_statusline_refresh_usage() {
   )
 }
 
-claude_statusline_write_context() {
-  local session_id="${1:-}"
-  local pct="${2:-}"
-  local window="${3:-}"
-  local safe_session=""
-  local runtime_dir=""
-  local cache_file=""
-  local tmp=""
-
-  safe_session="${session_id//[^a-zA-Z0-9_-]/}"
-  [ -n "$safe_session" ] || return 1
-  case "$pct" in ''|*[!0-9]*) return 1 ;; esac
-  case "$window" in ''|*[!0-9]*) return 1 ;; esac
-
-  runtime_dir="$(_claude_statusline_runtime_dir)"
-  cache_file="$runtime_dir/context-usage-${safe_session}.json"
-
-  (
-    umask 077
-    mkdir -p "$runtime_dir" 2>/dev/null || exit 1
-    tmp="$(mktemp "$runtime_dir/.context-usage-${safe_session}.XXXXXX" 2>/dev/null)" || exit 1
-    trap 'rm -f "$tmp"' EXIT HUP INT TERM
-    printf '{"pct":%d,"window":%d,"ts":%d}\n' "$pct" "$window" "$(date +%s)" > "$tmp" || exit 1
-    mv -f "$tmp" "$cache_file" 2>/dev/null || exit 1
-    trap - EXIT HUP INT TERM
-  )
-}
-
 claude_statusline_read_usage() {
   local runtime_dir=""
   local cache_file=""

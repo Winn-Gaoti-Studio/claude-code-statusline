@@ -1,5 +1,10 @@
 #!/bin/bash
 set -f
+# Byte-wise C locale for the whole script, so cell_width, split_chars and every
+# ${#var} count bytes whatever the caller's locale. Switching per call with
+# `local LC_ALL=C` inside $(...) intermittently yields empty output under
+# bash 5.3 when no locale is inherited.
+export LC_ALL=C
 
 input=$(cat)
 
@@ -14,14 +19,25 @@ if [ -r "$cache_helper" ]; then
 fi
 
 # ── Colors ──────────────────────────────────────────────
-blue='\033[38;2;0;153;255m'
-orange='\033[38;2;255;176;85m'
-green='\033[38;2;0;175;80m'
-cyan='\033[38;2;86;182;194m'
-red='\033[38;2;255;85;85m'
-yellow='\033[38;2;230;200;0m'
-white='\033[38;2;220;220;220m'
-magenta='\033[38;2;180;140;255m'
+# One pastel family of similar lightness and saturation, used by every segment:
+# accents mark identity (model and directory blue, branch lavender), the
+# ok → warn → high → crit scale marks state (context, cache, usage, bars), text
+# marks labels, and dim marks secondary detail.
+accent_rgb='130;170;255'
+accent2_rgb='195;165;255'
+text_rgb='205;210;220'
+ok_rgb='125;205;160'
+warn_rgb='225;195;110'
+high_rgb='240;160;110'
+crit_rgb='240;120;135'
+accent="\033[38;2;${accent_rgb}m"
+accent_bold="\033[1;38;2;${accent_rgb}m"
+accent2="\033[38;2;${accent2_rgb}m"
+text="\033[38;2;${text_rgb}m"
+ok="\033[38;2;${ok_rgb}m"
+warn="\033[38;2;${warn_rgb}m"
+high="\033[38;2;${high_rgb}m"
+crit="\033[38;2;${crit_rgb}m"
 dim='\033[2m'
 reset='\033[0m'
 
@@ -39,27 +55,146 @@ format_tokens() {
     fi
 }
 
+# cell_width and split_chars are kept identical in subagent-statusline.sh; the
+# smoke test compares the two copies.
+cell_width() {
+    # Terminal cells of plain text, stored in _cw, counted byte-wise under the
+    # script-wide C locale: each double-width character's leading bytes
+    # become two cells, then UTF-8 continuation bytes drop out. Double width
+    # covers U+2E80-U+DFFF (CJK, kana, Hangul), fullwidth forms (U+FE30-U+FE4F,
+    # U+FF00-U+FF60, U+FFE0-U+FFE6) and 4-byte sequences (emoji such as 🌳);
+    # wide emoji below U+2E80, such as ⚡, still count as one cell.
+    local s=$1
+    s=${s//[$'\xe3'-$'\xed'$'\xf0'-$'\xf4']/WW}
+    s=${s//$'\xe2'[$'\xba'-$'\xbf']/WW}
+    s=${s//$'\xef\xbc'/WW}
+    s=${s//$'\xef\xbd'[$'\x80'-$'\xa0']/WW}
+    s=${s//$'\xef\xbf'[$'\xa0'-$'\xa6']/WW}
+    s=${s//$'\xef\xb8'[$'\xb0'-$'\xbf']/WW}
+    s=${s//$'\xef\xb9'[$'\x80'-$'\x8f']/WW}
+    s=${s//[$'\x80'-$'\xbf']/}
+    _cw=${#s}
+}
+
+split_chars() {
+    # Split $1 into whole UTF-8 characters (_chars) and their cell widths
+    # (_cwidths), byte-wise under the script-wide C locale.
+    local s=$1 i=0 n ch b
+    n=${#s}
+    _chars=()
+    _cwidths=()
+    while [ "$i" -lt "$n" ]; do
+        ch=${s:i:1}
+        i=$(( i + 1 ))
+        while [ "$i" -lt "$n" ]; do
+            b=${s:i:1}
+            case "$b" in
+                [$'\x80'-$'\xbf']) ch+=$b; i=$(( i + 1 )) ;;
+                *) break ;;
+            esac
+        done
+        cell_width "$ch"
+        _chars+=("$ch")
+        _cwidths+=("$_cw")
+    done
+}
+
 truncate_middle() {
-    # Cap a string to maxlen with a single-char ellipsis "…" in the middle,
-    # preserving the head and tail equally. p10k-style — long branches and
-    # worktree slugs stay recognizable at both ends.
-    local s=$1 maxlen=$2
-    local len=${#s}
-    if [ "$len" -le "$maxlen" ]; then
+    # Cap a string to maxlen cells with a single-char ellipsis "…" in the
+    # middle, preserving the head and tail equally. p10k-style — long branches
+    # and worktree slugs stay recognizable at both ends. Cuts fall between
+    # whole characters.
+    local s=$1 maxlen=$2 head="" tail="" w=0 i
+    cell_width "$s"
+    if [ "$_cw" -le "$maxlen" ]; then
         printf "%s" "$s"
         return
     fi
     local keep=$(( (maxlen - 1) / 2 ))
-    printf "%s…%s" "${s:0:keep}" "${s: -keep}"
+    split_chars "$s"
+    for (( i = 0; i < ${#_chars[@]}; i++ )); do
+        [ $(( w + _cwidths[i] )) -gt "$keep" ] && break
+        head+=${_chars[i]}
+        w=$(( w + _cwidths[i] ))
+    done
+    w=0
+    for (( i = ${#_chars[@]} - 1; i >= 0; i-- )); do
+        [ $(( w + _cwidths[i] )) -gt "$keep" ] && break
+        tail=${_chars[i]}$tail
+        w=$(( w + _cwidths[i] ))
+    done
+    printf "%s…%s" "$head" "$tail"
 }
 
 color_for_pct() {
     local pct=$1
-    if [ "$pct" -ge 90 ]; then printf "$red"
-    elif [ "$pct" -ge 70 ]; then printf "$yellow"
-    elif [ "$pct" -ge 50 ]; then printf "$orange"
-    else printf "$green"
+    if [ "$pct" -ge 90 ]; then printf "$crit"
+    elif [ "$pct" -ge 70 ]; then printf "$high"
+    elif [ "$pct" -ge 50 ]; then printf "$warn"
+    else printf "$ok"
     fi
+}
+
+# Cache hit ratio runs the other way: a high percentage is the healthy state.
+color_for_hit() {
+    local pct=$1
+    if [ "$pct" -ge 80 ]; then printf "$ok"
+    elif [ "$pct" -ge 60 ]; then printf "$warn"
+    elif [ "$pct" -ge 40 ]; then printf "$high"
+    else printf "$crit"
+    fi
+}
+
+short_miss_cause() {
+    case "$1" in
+        tools_changed)         printf "tools" ;;
+        system_prompt_changed) printf "system prompt" ;;
+        ttl_expired_5m)        printf "ttl 5m" ;;
+        ttl_expired_1h)        printf "ttl 1h" ;;
+        likely_server_side)    printf "server" ;;
+        *)                     printf "%s" "$1" ;;
+    esac
+}
+
+visible_len() {
+    # Terminal cells a segment occupies, stored in _vlen: expand the literal
+    # \033 color codes, drop every SGR sequence, then measure with cell_width.
+    local plain re=$'\033''\[[0-9;]*m'
+    printf -v plain '%b' "$1"
+    while [[ $plain =~ $re ]]; do
+        plain=${plain//"${BASH_REMATCH[0]}"/}
+    done
+    cell_width "$plain"
+    _vlen=$_cw
+}
+
+layout_segments() {
+    # Join segments with sep into _layout. With a known width, start a new row
+    # whenever the next segment would overflow the current one; without it,
+    # keep a single row.
+    local out="" row_len=0 seg
+    for seg in "$@"; do
+        [ -z "$seg" ] && continue
+        if [ "$max_width" -gt 0 ]; then
+            visible_len "$seg"
+            if [ -z "$out" ]; then
+                out="$seg"
+                row_len=$_vlen
+                continue
+            fi
+            if [ $(( row_len + 3 + _vlen )) -gt "$max_width" ]; then
+                out+="\n${seg}"
+                row_len=$_vlen
+                continue
+            fi
+            row_len=$(( row_len + 3 + _vlen ))
+        elif [ -z "$out" ]; then
+            out="$seg"
+            continue
+        fi
+        out+="${sep}${seg}"
+    done
+    _layout="$out"
 }
 
 build_bar() {
@@ -72,7 +207,7 @@ build_bar() {
     local denom=$(( width - 1 ))
     [ "$denom" -lt 1 ] && denom=1
 
-    # Per-cell RGB interpolation along green → yellow → orange → red.
+    # Per-cell RGB interpolation along the palette's ok → warn → high → crit.
     # Filled cells take the gradient at their own bar position; empty cells
     # form a dim track. DOUBLE HORIZONTAL ═ is a box-drawing extender, so
     # cells tile edge-to-edge with no seams (unlike geometric ▬), and its
@@ -83,11 +218,11 @@ build_bar() {
         if [ "$i" -lt "$filled" ]; then
             t=$(( i * 100 / denom ))
             if [ "$t" -le 50 ]; then
-                r1=0;   g1=175; b1=80; r2=230; g2=200; b2=0;  sub=$(( t * 2 ))
+                IFS=';' read -r r1 g1 b1 <<< "$ok_rgb";   IFS=';' read -r r2 g2 b2 <<< "$warn_rgb"; sub=$(( t * 2 ))
             elif [ "$t" -le 75 ]; then
-                r1=230; g1=200; b1=0;  r2=255; g2=176; b2=85; sub=$(( (t - 50) * 4 ))
+                IFS=';' read -r r1 g1 b1 <<< "$warn_rgb"; IFS=';' read -r r2 g2 b2 <<< "$high_rgb"; sub=$(( (t - 50) * 4 ))
             else
-                r1=255; g1=176; b1=85; r2=255; g2=85;  b2=85; sub=$(( (t - 75) * 4 ))
+                IFS=';' read -r r1 g1 b1 <<< "$high_rgb"; IFS=';' read -r r2 g2 b2 <<< "$crit_rgb"; sub=$(( (t - 75) * 4 ))
             fi
             r=$(( (r1*(100-sub) + r2*sub) / 100 ))
             g=$(( (g1*(100-sub) + g2*sub) / 100 ))
@@ -130,15 +265,18 @@ iso_to_epoch() {
 }
 
 format_reset_time() {
-    local iso_str="$1"
-    [ -z "$iso_str" ] || [ "$iso_str" = "null" ] && return
+    # Native stdin fields carry Unix epoch seconds; the usage API cache carries
+    # ISO-8601 strings.
+    local when="$1"
+    [ -z "$when" ] || [ "$when" = "null" ] && return
 
     local epoch
-    epoch=$(iso_to_epoch "$iso_str")
+    case "$when" in
+        *[!0-9]*) epoch=$(iso_to_epoch "$when") ;;
+        *) epoch="$when" ;;
+    esac
     [ -z "$epoch" ] && return
 
-    local now_epoch
-    now_epoch=$(date +%s)
     local diff=$(( epoch - now_epoch ))
 
     if [ "$diff" -le 0 ]; then
@@ -165,43 +303,82 @@ format_reset_time() {
 }
 
 # ── Extract JSON data ───────────────────────────────────
+# rate_limits and prompt_cache are absent until the first API response, and
+# each rate-limit window can be absent on its own; a non-number maps to "".
 eval "$(jq -r '
+  def num: if type == "number" then . else empty end;
+  def obj: if type == "object" then . else {} end;
+  (.rate_limits | obj) as $rl |
+  (.prompt_cache | obj) as $pc |
   "model_name="   + (.model.display_name // "Claude" | @sh),
   "size="         + (.context_window.context_window_size // 0 | tostring | @sh),
   "pct_used="     + (.context_window.used_percentage // 0 | floor | tostring | @sh),
   "input_tokens=" + (.context_window.current_usage.input_tokens // 0 | tostring | @sh),
   "cache_create=" + (.context_window.current_usage.cache_creation_input_tokens // 0 | tostring | @sh),
   "cache_read="     + (.context_window.current_usage.cache_read_input_tokens // 0 | tostring | @sh),
-  "output_tokens="  + (.context_window.current_usage.output_tokens // 0 | tostring | @sh),
   "cwd="            + (.cwd // "" | @sh),
   "git_worktree="   + (.workspace.git_worktree // "" | @sh),
   "effort_level="   + (.effort.level // "" | @sh),
-  "session_id="     + (.session_id // "" | @sh)
+  "rl_five_pct="    + (($rl.five_hour | obj | .used_percentage | num | round | tostring) // "" | @sh),
+  "rl_five_reset="  + (($rl.five_hour | obj | .resets_at | num | floor | tostring) // "" | @sh),
+  "rl_seven_pct="   + (($rl.seven_day | obj | .used_percentage | num | round | tostring) // "" | @sh),
+  "rl_seven_reset=" + (($rl.seven_day | obj | .resets_at | num | floor | tostring) // "" | @sh),
+  "pc_observed="    + ($pc.caching_observed == true | tostring | @sh),
+  "pc_warm="        + ($pc.warm == true | tostring | @sh),
+  "pc_hit="         + (($pc.hit_ratio | num | . * 100 | round | tostring) // "" | @sh),
+  "pc_expires="     + (($pc.expires_at | num | floor | tostring) // "" | @sh),
+  "pc_recache="     + (($pc.recache_tokens_if_cold | num | floor | tostring) // "" | @sh),
+  "pc_misses="      + (($pc.misses | num | floor | tostring) // "0" | @sh),
+  "pc_cause="       + (($pc.last_miss_cause | obj | .causes | if type == "array" then .[0] else empty end | strings) // "" | @sh)
 ' <<< "$input")"
 [ "$size" -eq 0 ] 2>/dev/null && size=200000
 
-current=$(( input_tokens + cache_create + cache_read + output_tokens ))
+# Context size counts input only (fresh, cache writes, cache reads), the same
+# formula as used_percentage; output tokens are not part of the context.
+current=$(( input_tokens + cache_create + cache_read ))
 
-# Hand the authoritative context usage off to hooks: hook stdin never carries
-# context_window (only the status line gets it), so the compact-reminder
-# UserPromptSubmit hook reads this per-session cache instead of recomputing.
-if declare -F claude_statusline_write_context >/dev/null 2>&1; then
-    claude_statusline_write_context "$session_id" "$pct_used" "$size" >/dev/null 2>&1 || true
-fi
 used_tokens=$(format_tokens $current)
 total_tokens=$(format_tokens $size)
+
+now_epoch=$(date +%s)
+
+# Claude Code sets COLUMNS to the terminal width (v2.1.153+); reserve four
+# cells for its own row padding. Without COLUMNS every line stays one row at
+# the full-width sizes.
+max_width=0
+bar_width=6
+case "${COLUMNS:-}" in
+    ''|*[!0-9]*) ;;
+    *)
+        max_width=$(( COLUMNS - 4 ))
+        [ "$COLUMNS" -lt 100 ] && bar_width=5
+        ;;
+esac
+
+settings_path="$HOME/.claude/settings.json"
 
 # Prefer the live session effort level from stdin; fall back to the persisted config.
 effort="$effort_level"
 if [ -z "$effort" ]; then
-    settings_path="$HOME/.claude/settings.json"
     if [ -f "$settings_path" ]; then
         effort=$(jq -r '.effortLevel // "default"' "$settings_path" 2>/dev/null)
     fi
 fi
 [ -z "$effort" ] && effort="default"
 
-# ── LINE 1: Model │ Context % │ Directory (branch) │ Session │ Thinking ──
+# Ultracode has no stdin field (unlike effort.level) — it only ever lives in
+# settings.json as a top-level sibling of effortLevel — so this read always
+# runs, independent of whether effort above came from stdin or the fallback.
+# The badge therefore shows the configured default: a session-only toggle via
+# /effort (Tab, or `/effort ultracode on|off`) is invisible here until Claude
+# Code reports ultracode on stdin (anthropics/claude-code#69068).
+ultracode_enabled="false"
+if [ -f "$settings_path" ]; then
+    ultracode_enabled=$(jq -r '.ultracode // false' "$settings_path" 2>/dev/null)
+fi
+[ "$ultracode_enabled" = "true" ] || ultracode_enabled="false"
+
+# ── LINE 1: Model+Effort │ Context % │ Directory (branch) ──
 pct_color=$(color_for_pct "$pct_used")
 [ -z "$cwd" ] && cwd=$(pwd)
 dirname=$(basename "$cwd")
@@ -215,10 +392,17 @@ if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     fi
 fi
 
-line1="${blue}${model_name}${reset}"
-line1+="${sep}"
-line1+="${pct_color}${pct_used}%${reset} ${dim}${used_tokens}/${total_tokens}${reset}"
-line1+="${sep}"
+# Model and effort are grouped: a plain space (not sep) keeps them visually
+# adjacent, matching the same convention used for dir+branch below. When
+# ultracode is on the word follows the effort label, not in place of it: since
+# Claude Code 2.1.284 ultracode is a toggle independent of the effort level, so
+# both facts are true at once and both are worth showing.
+# The whole segment takes the accent so it reads as one unit; weight alone
+# separates the bold model name from the effort level and ultracode words.
+model_segment="${accent_bold}${model_name}${reset} ${accent}${effort}"
+[ "$ultracode_enabled" = "true" ] && model_segment+=" ultracode"
+model_segment+="${reset}"
+context_segment="${pct_color}${pct_used}%${reset} ${dim}${used_tokens}/${total_tokens}${reset}"
 # Dir/branch segment. In worktree mode dirname == worktree slug (the basename
 # of .worktrees/<user>/<scope>) and the branch is <user>/<scope>, so the
 # slug would appear twice; we replace the dirname with the MAIN repo name
@@ -226,8 +410,6 @@ line1+="${sep}"
 # checkout, so basename gives the repo name) and strip the implicit user/
 # prefix from the branch. Long names get middle-ellipsis truncation so the
 # head and tail (issue ID, last word) stay recognizable.
-DIR_CAP=24
-BRANCH_CAP=28
 if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
     main_repo=""
     common_git=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)
@@ -240,22 +422,20 @@ if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
     fi
     [ -z "$main_repo" ] && main_repo="$dirname"
     display_branch="${git_branch#*/}"
-    line1+="${cyan}$(truncate_middle "$main_repo" "$DIR_CAP")${reset} 🌳 ${magenta}$(truncate_middle "$display_branch" "$BRANCH_CAP")${red}${git_dirty}${reset}"
-elif [ -n "$git_branch" ]; then
-    line1+="${cyan}$(truncate_middle "$dirname" "$DIR_CAP")${reset}"
-    line1+=" ${green}($(truncate_middle "$git_branch" "$BRANCH_CAP")${red}${git_dirty}${green})${reset}"
-else
-    line1+="${cyan}$(truncate_middle "$dirname" "$DIR_CAP")${reset}"
 fi
-line1+="${sep}"
-case "$effort" in
-    max)    line1+="${red}● ${effort}${reset}" ;;
-    xhigh)  line1+="${orange}● ${effort}${reset}" ;;
-    high)   line1+="${yellow}◕ ${effort}${reset}" ;;
-    medium) line1+="${green}◑ ${effort}${reset}" ;;
-    low)    line1+="${dim}◔ ${effort}${reset}" ;;
-    *)      line1+="${dim}◑ ${effort}${reset}" ;;
-esac
+
+build_dir_segment() {
+    # $1/$2: directory and branch caps. Sets _dir_segment.
+    local dir_cap=$1 branch_cap=$2
+    if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
+        _dir_segment="${accent}$(truncate_middle "$main_repo" "$dir_cap")${reset} 🌳 ${accent2}$(truncate_middle "$display_branch" "$branch_cap")${crit}${git_dirty}${reset}"
+    elif [ -n "$git_branch" ]; then
+        _dir_segment="${accent}$(truncate_middle "$dirname" "$dir_cap")${reset}"
+        _dir_segment+=" ${accent2}($(truncate_middle "$git_branch" "$branch_cap")${crit}${git_dirty}${accent2})${reset}"
+    else
+        _dir_segment="${accent}$(truncate_middle "$dirname" "$dir_cap")${reset}"
+    fi
+}
 
 # Render a stable cache snapshot and ask the helper to refresh stale data in a
 # detached process for the next invocation. Helper failure never blocks output.
@@ -268,11 +448,17 @@ if declare -F claude_statusline_refresh_usage_async >/dev/null 2>&1; then
 fi
 
 # ── Rate limit lines ────────────────────────────────────
-rate_lines=""
+rate_segments=()
 extra_segment=""
+extra_reset=""
+cache_valid="false"
+five_hour_pct=""
+five_hour_reset_at=""
+seven_day_pct=""
+seven_day_reset_at=""
 
 if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
-    bar_width=10
+    cache_valid="true"
 
     # Single jq pass over the cache instead of ~10 separate jq/awk subprocesses.
     # Percentages arrive pre-rounded; dollar amounts come through as plain
@@ -283,47 +469,202 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
       "extra_unlimited="     + (((.extra_usage.monthly_limit // 0) == 0)  | tostring | @sh),
       "five_hour_pct="       + ((.five_hour.utilization // 0)  | round | tostring | @sh),
       "seven_day_pct="       + ((.seven_day.utilization // 0)  | round | tostring | @sh),
-      "five_hour_reset_iso=" + ((.five_hour.resets_at // "")             | @sh),
-      "seven_day_reset_iso=" + ((.seven_day.resets_at // "")            | @sh),
+      "five_hour_reset_at="  + ((.five_hour.resets_at // "")             | @sh),
+      "seven_day_reset_at="  + ((.seven_day.resets_at // "")            | @sh),
       "extra_used_usd="      + ((.extra_usage.used_credits // 0)  / 100  | tostring | @sh),
-      "extra_limit_usd="     + ((.extra_usage.monthly_limit // 0) / 100  | tostring | @sh)
+      "extra_limit_usd="     + ((.extra_usage.monthly_limit // 0) / 100  | tostring | @sh),
+      "extra_pct="           + ((.extra_usage.utilization // 0)  | round | tostring | @sh)
     ')"
+fi
 
-    five_hour_reset=$(format_reset_time "$five_hour_reset_iso")
+# Each 5h/7d window has two sources that lag in different ways. Native stdin
+# rate_limits need no network or credentials but change only when this session
+# gets an API response, so an idle session keeps an old snapshot while other
+# sessions spend the same account quota. The usage API cache is account-wide
+# but polled at most once a minute, and stdin is the only source when the API
+# is unreachable. Resets more than five minutes apart are different windows, so
+# the later one is current; within one window usage only grows, so the higher
+# percentage is the fresher reading.
+merge_window() {
+    # $1/$2: stdin percentage and epoch reset; $3/$4: cache percentage and
+    # ISO reset. Sets _pct and _reset.
+    local stdin_pct=$1 stdin_reset=$2 cache_pct=$3 cache_reset=$4
+    local cache_epoch="" gap
+    _pct="$cache_pct"
+    _reset="$cache_reset"
+    [ -z "$stdin_pct" ] && return
+    if [ -z "$cache_pct" ]; then
+        _pct="$stdin_pct"
+        _reset="$stdin_reset"
+        return
+    fi
+    [ -n "$cache_reset" ] && cache_epoch=$(iso_to_epoch "$cache_reset")
+    if [ -n "$stdin_reset" ] && [ -n "$cache_epoch" ]; then
+        gap=$(( stdin_reset - cache_epoch ))
+        [ "$gap" -lt -300 ] && return
+        if [ "$gap" -gt 300 ]; then
+            _pct="$stdin_pct"
+            _reset="$stdin_reset"
+            return
+        fi
+    fi
+    if [ "$stdin_pct" -ge "$cache_pct" ]; then
+        _pct="$stdin_pct"
+        [ -n "$stdin_reset" ] && _reset="$stdin_reset"
+    fi
+}
+
+merge_window "$rl_five_pct" "$rl_five_reset" "$five_hour_pct" "$five_hour_reset_at"
+five_hour_pct="$_pct"
+five_hour_reset_at="$_reset"
+merge_window "$rl_seven_pct" "$rl_seven_reset" "$seven_day_pct" "$seven_day_reset_at"
+seven_day_pct="$_pct"
+seven_day_reset_at="$_reset"
+
+if [ -n "$five_hour_pct" ]; then
+    five_hour_reset=$(format_reset_time "$five_hour_reset_at")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
     five_hour_pct_color=$(color_for_pct "$five_hour_pct")
+    rate_segments+=("${text}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct}%${reset} ${dim}⟳${reset} ${text}${five_hour_reset}${reset}")
+fi
 
-    seven_day_reset=$(format_reset_time "$seven_day_reset_iso")
+if [ -n "$seven_day_pct" ]; then
+    seven_day_reset=$(format_reset_time "$seven_day_reset_at")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
     seven_day_pct_color=$(color_for_pct "$seven_day_pct")
+    rate_segments+=("${text}weekly${reset} ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct}%${reset} ${dim}⟳${reset} ${text}${seven_day_reset}${reset}")
+fi
 
-    rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct}%${reset} ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
-    rate_lines+="${sep}"
-    rate_lines+="${white}weekly${reset} ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct}%${reset} ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
+# Scoped weekly caps and extra usage exist only in the usage API cache.
+if [ "$cache_valid" = "true" ]; then
+    # Per-model scoped weekly limits (a "limits" entry with kind
+    # "weekly_scoped" — Anthropic can cap a single model's weekly usage
+    # independently of the aggregate five_hour/seven_day figures above, e.g.
+    # today's "Fable"). Codenames rotate, so label from display_name
+    # generically instead of hardcoding one; this also picks up any future
+    # second scoped cap for free.
+    while IFS= read -r scoped_json; do
+        [ -z "$scoped_json" ] && continue
+        eval "$(echo "$scoped_json" | jq -r '
+          "s_name="   + (.scope.model.display_name // "" | @sh),
+          "s_pct="    + ((.percent // 0)                 | round | tostring | @sh),
+          "s_reset="  + (.resets_at // ""                | @sh),
+          "s_active=" + (.is_active // false              | tostring | @sh)
+        ')"
+        [ -z "$s_name" ] && continue
+        s_bar=$(build_bar "$s_pct" "$bar_width")
+        s_color=$(color_for_pct "$s_pct")
+        s_reset_fmt=$(format_reset_time "$s_reset")
+        s_mark=""
+        [ "$s_active" = "true" ] && s_mark="${text}*${reset}"
+        s_seg="${text}${s_name}${reset} ${s_bar} ${s_color}${s_pct}%${reset}${s_mark}"
+        [ -n "$s_reset_fmt" ] && s_seg+=" ${dim}⟳${reset} ${text}${s_reset_fmt}${reset}"
+        rate_segments+=("$s_seg")
+    done < <(echo "$usage_data" | jq -c '.limits[]? | select(.kind == "weekly_scoped" and .scope.model.display_name != null)')
 
     if [ "$extra_enabled" = "true" ]; then
         extra_used=$(printf "%.2f" "$extra_used_usd")
 
         if [ "$extra_unlimited" = "true" ]; then
-            extra_segment="${white}↗${reset} ${green}\$${extra_used} used${reset} ${dim}·${reset} ${green}unlimited${reset}"
+            extra_segment="${text}↗${reset} ${text}\$${extra_used} used${reset} ${dim}· unlimited${reset}"
         else
             extra_limit=$(printf "%.2f" "$extra_limit_usd")
 
-            extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-            if [ -z "$extra_reset" ]; then
-                extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            # Billing-cycle reset date only matters once this month's credits
+            # are actually used up; hide it while there's still headroom.
+            if [ "$extra_pct" -ge 100 ] 2>/dev/null; then
+                extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                if [ -z "$extra_reset" ]; then
+                    extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                fi
             fi
 
-            extra_segment="${white}↗${reset} ${white}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
+            extra_segment="${text}↗${reset} ${text}\$${extra_used}${dim}/${reset}${text}\$${extra_limit}${reset}"
+        fi
+    fi
+fi
+
+if [ -n "$extra_reset" ] && [ "${#rate_segments[@]}" -gt 0 ]; then
+    last_rate=$(( ${#rate_segments[@]} - 1 ))
+    rate_segments[$last_rate]+=" ${dim}resets ${extra_reset}${reset}"
+fi
+
+# ── Prompt cache (native stdin, v2.1.251+) ──────────────
+# Hidden until a response reports cache tokens. Warm shows the hit ratio and
+# the time left before the cached prefix goes cold; cold shows how many tokens
+# the next request re-caches. Misses add their count and the likely cause of
+# the latest one.
+cache_segment=""
+if [ "$pc_observed" = "true" ]; then
+    cache_segment="${text}cache${reset}"
+    [ -n "$pc_hit" ] && cache_segment+=" $(color_for_hit "$pc_hit")${pc_hit}%${reset}"
+
+    pc_state="cold"
+    if [ "$pc_warm" = "true" ]; then
+        pc_state="warm"
+        # A snapshot taken before expires_at still says warm once it passes.
+        [ -n "$pc_expires" ] && [ "$pc_expires" -le "$now_epoch" ] && pc_state="cold"
+    fi
+
+    if [ "$pc_state" = "warm" ]; then
+        pc_left=$(format_reset_time "$pc_expires")
+        [ -n "$pc_left" ] && cache_segment+=" ${dim}⟳${reset} ${text}${pc_left}${reset}"
+    else
+        cache_segment+=" ${accent}cold${reset}"
+        if [ -n "$pc_recache" ] && [ "$pc_recache" -gt 0 ]; then
+            cache_segment+=" ${dim}$(format_tokens "$pc_recache") to re-cache${reset}"
         fi
     fi
 
-    [ -n "$extra_reset" ] && rate_lines+=" ${dim}resets ${extra_reset}${reset}"
+    if [ "$pc_misses" -gt 0 ] 2>/dev/null; then
+        cache_segment+=" ${crit}✗${pc_misses}${reset}"
+        [ -n "$pc_cause" ] && cache_segment+=" ${dim}$(short_miss_cause "$pc_cause")${reset}"
+    fi
 fi
 
+# Tighter caps apply only where they help: they bring the dir segment back onto
+# the model/context/cache row, or the full-cap segment overflows even a row of its
+# own. Otherwise a wrapped dir segment keeps its full caps.
+build_dir_segment 24 28
+if [ "$max_width" -gt 0 ]; then
+    visible_len "$model_segment"
+    line1_len=$_vlen
+    visible_len "$context_segment"
+    line1_len=$(( line1_len + 3 + _vlen ))
+    if [ -n "$cache_segment" ]; then
+        visible_len "$cache_segment"
+        line1_len=$(( line1_len + 3 + _vlen ))
+    fi
+    visible_len "$_dir_segment"
+    full_dir_len=$_vlen
+    if [ $(( line1_len + 3 + full_dir_len )) -gt "$max_width" ]; then
+        full_dir_segment="$_dir_segment"
+        build_dir_segment 16 20
+        visible_len "$_dir_segment"
+        if [ $(( line1_len + 3 + _vlen )) -gt "$max_width" ] && [ "$full_dir_len" -le "$max_width" ]; then
+            _dir_segment="$full_dir_segment"
+        fi
+    fi
+fi
+dir_segment="$_dir_segment"
+
 # ── Output ──────────────────────────────────────────────
-[ -n "$extra_segment" ] && line1+="${sep}${extra_segment}"
+# The prompt cache describes this session like the context does, so it sits beside
+# the context on line 1; line 2 keeps only the account-wide usage windows.
+line1_segments=("$model_segment" "$context_segment")
+[ -n "$cache_segment" ] && line1_segments+=("$cache_segment")
+line1_segments+=("$dir_segment")
+[ -n "$extra_segment" ] && line1_segments+=("$extra_segment")
+layout_segments "${line1_segments[@]}"
+line1="$_layout"
+
+line2=""
+if [ "${#rate_segments[@]}" -gt 0 ]; then
+    layout_segments "${rate_segments[@]}"
+    line2="$_layout"
+fi
+
 printf "%b" "$line1"
-[ -n "$rate_lines" ] && printf "\n\n%b" "$rate_lines"
+[ -n "$line2" ] && printf "\n\n%b" "$line2"
 
 exit 0
