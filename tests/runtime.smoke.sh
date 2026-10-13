@@ -650,33 +650,78 @@ printf '{"ultracode": false}\n' > "$HOME_DIR/.claude/settings.json"
 run_statusline "$(base_input)"
 assert_not_contains "$(strip_ansi "$OUTPUT")" "ultracode" "no ultracode word when it is off"
 
-# COLUMNS wraps segments onto extra rows and shortens bars below 100 columns;
-# without COLUMNS every line stays one row (see the snapshots above).
+# COLUMNS wraps segments onto extra rows, and below 100 columns it shortens
+# bars and selects the compact form. Without COLUMNS every line stays one row
+# in the full form (see the snapshots above). A window without a reset time
+# shows no reset marker.
 new_case narrow-columns
 write_usage "$RUNTIME_DIR/statusline-usage-cache.json" 11 22
 TEST_COLUMNS=60
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 EXPECTED_NARROW="$(printf '%s\n' \
-  "Claude Opus high │ 42% 6k/200k │ cache 91% ⟳ in 52m" \
+  "Claude Opus high │ 42% 6k/200k │ cache 91% ⟳52m" \
   "repo (main)" \
   "" \
-  "current ═════ 11% ⟳  │ weekly ═════ 22% ⟳ ")"
+  "5h ═════ 11% │ 7d ═════ 22%")"
 assert_equal "$PLAIN" "$EXPECTED_NARROW" "narrow terminal shortens bars and wraps only the segment that overflows"
 
-# At 45 columns (41 usable) the 20- and 19-cell usage segments fit only
-# without their 3-cell separator, and line 1 wraps too.
+# At 29 columns (25 usable) the two 12-cell usage segments fit only without
+# their 3-cell separator, and line 1 wraps too.
 new_case tight-columns
 write_usage "$RUNTIME_DIR/statusline-usage-cache.json" 11 22
-TEST_COLUMNS=45
+TEST_COLUMNS=29
 run_statusline "$WARM_INPUT"
 EXPECTED_TIGHT="$(printf '%s\n' \
-  "Claude Opus high │ 42% 6k/200k" \
-  "cache 91% ⟳ in 52m │ repo (main)" \
+  "Claude Opus high" \
+  "42% 6k/200k" \
+  "cache 91% ⟳52m" \
+  "repo (main)" \
   "" \
-  "current ═════ 11% ⟳ " \
-  "weekly ═════ 22% ⟳ ")"
+  "5h ═════ 11%" \
+  "7d ═════ 22%")"
 assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_TIGHT" "separator width decides the wrap point"
+
+# Below 100 columns every segment takes its compact form, so a split pane of
+# about 80 columns keeps each line on one row.
+NOW="$(date +%s)"
+COMPACT_USAGE="{\"five_hour\":{\"utilization\":95,\"resets_at\":\"$(iso_utc "$((NOW + 98 * 60 + 30))")\"},\"seven_day\":{\"utilization\":76,\"resets_at\":\"$(iso_utc "$((NOW + 43 * 3600 + 30))")\"},\"limits\":[{\"kind\":\"weekly_scoped\",\"percent\":16,\"resets_at\":\"$(iso_utc "$((NOW + 43 * 3600 + 30))")\",\"is_active\":false,\"scope\":{\"model\":{\"display_name\":\"Fable\"}}}],\"extra_usage\":{\"is_enabled\":true,\"monthly_limit\":null,\"used_credits\":8725,\"utilization\":null}}"
+compact_input() {
+  base_input | "$REAL_JQ" -c --arg cwd "$1" '.model.display_name = "Opus 5.5" | .effort.level = "medium"
+    | .cwd = $cwd | .context_window = {context_window_size: 1000000, used_percentage: 5.4, current_usage: {input_tokens: 4000, cache_creation_input_tokens: 0, cache_read_input_tokens: 50000}}'
+}
+
+new_case compact-split-pane
+write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
+TEST_COLUMNS=81
+run_statusline "$(compact_input /workspace/harness | "$REAL_JQ" -c --argjson exp "$((NOW + 59 * 60 + 30))" \
+  '.prompt_cache = {caching_observed: true, warm: true, expires_at: $exp, hit_ratio: 0.64, misses: 0, recache_tokens_if_cold: 0}')"
+EXPECTED_COMPACT="$(printf '%s\n' \
+  "Opus 5.5 medium │ 5% 54k/1.0m │ cache 64% ⟳59m │ harness (main) │ ↗ \$87.25" \
+  "" \
+  "5h ═════ 95% ⟳1h38m │ 7d ═════ 76% ⟳1d19h │ Fable ═════ 16% ⟳1d19h")"
+assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_COMPACT" "a split pane renders each line on one row in compact form"
+
+# The extra usage segment counts toward the dir cap decision.
+new_case compact-long-branch
+write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
+FAKE_GIT_BRANCH=ci/cleanup-stale-ci-data
+TEST_COLUMNS=81
+run_statusline "$(compact_input /workspace/api-bruno)"
+assert_equal "$(strip_ansi "$OUTPUT" | head -n 1)" "Opus 5.5 medium │ 5% 54k/1.0m │ api-bruno (ci/cleanu…e-ci-data) │ ↗ \$87.25" \
+  "tighter caps keep extra usage on line 1"
+
+new_case compact-cold-cache
+TEST_COLUMNS=99
+run_statusline "$COLD_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ cache 42% cold 45k ✗2 tools │" "a compact cold cache drops the re-cache words"
+
+new_case full-at-100-columns
+write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
+TEST_COLUMNS=100
+run_statusline "$(compact_input /workspace/harness)"
+assert_contains "$(strip_ansi "$OUTPUT")" "current ══════ 95% ⟳ in 1h 38m" "100 columns keep the full form"
+assert_contains "$(strip_ansi "$OUTPUT")" "↗ \$87.25 used · unlimited" "100 columns keep the full extra usage text"
 
 # Shorter dir/branch caps apply only where they keep the dir segment on the
 # model/context/cache row, or where the full-cap segment overflows a row of its own.
