@@ -414,6 +414,15 @@ git_branch=""
 git_dirty=""
 if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
+    # A jj workspace leaves Git HEAD detached, and a bookmark takes the place of
+    # the branch: show the newest bookmark on the working-copy commit or its
+    # parent. --ignore-working-copy and --at-op @ keep the query read-only (no
+    # snapshot, no new operation), so a render never changes the operation log.
+    if [ -z "$git_branch" ] && command -v jj >/dev/null 2>&1; then
+        git_branch=$(cd "$cwd" 2>/dev/null && jj --ignore-working-copy --at-op @ --no-pager --color never \
+            log --no-graph -r 'latest((@ | @-) & bookmarks())' \
+            -T 'local_bookmarks.map(|b| b.name()).join(" ")' 2>/dev/null)
+    fi
     if [ -n "$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null)" ]; then
         git_dirty="*"
     fi
