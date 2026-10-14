@@ -299,6 +299,10 @@ format_reset_time() {
         result="in ${minutes}m"
     fi
 
+    if [ "$compact" = "true" ]; then
+        result=${result#in }
+        result=${result// /}
+    fi
     printf "%s" "$result"
 }
 
@@ -344,16 +348,39 @@ now_epoch=$(date +%s)
 
 # Claude Code sets COLUMNS to the terminal width (v2.1.153+); reserve four
 # cells for its own row padding. Without COLUMNS every line stays one row at
-# the full-width sizes.
+# the full-width sizes. Below 100 columns, for example in a split pane, the
+# bars are shorter and every segment uses its compact form: 5h and 7d labels,
+# reset times such as 1h38m, and no secondary words. The width alone selects
+# the form, so the form does not change between renders as the content changes.
 max_width=0
 bar_width=6
+compact=false
 case "${COLUMNS:-}" in
     ''|*[!0-9]*) ;;
     *)
         max_width=$(( COLUMNS - 4 ))
-        [ "$COLUMNS" -lt 100 ] && bar_width=5
+        if [ "$COLUMNS" -lt 100 ]; then
+            bar_width=5
+            compact=true
+        fi
         ;;
 esac
+five_hour_label="current"
+seven_day_label="weekly"
+if [ "$compact" = "true" ]; then
+    five_hour_label="5h"
+    seven_day_label="7d"
+fi
+
+reset_suffix() {
+    # The reset marker and time for $1, or nothing when the time is unknown.
+    [ -z "$1" ] && return
+    if [ "$compact" = "true" ]; then
+        printf " ${dim}⟳${reset}${text}%s${reset}" "$1"
+    else
+        printf " ${dim}⟳${reset} ${text}%s${reset}" "$1"
+    fi
+}
 
 settings_path="$HOME/.claude/settings.json"
 
@@ -525,14 +552,14 @@ if [ -n "$five_hour_pct" ]; then
     five_hour_reset=$(format_reset_time "$five_hour_reset_at")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
     five_hour_pct_color=$(color_for_pct "$five_hour_pct")
-    rate_segments+=("${text}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct}%${reset} ${dim}⟳${reset} ${text}${five_hour_reset}${reset}")
+    rate_segments+=("${text}${five_hour_label}${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct}%${reset}$(reset_suffix "$five_hour_reset")")
 fi
 
 if [ -n "$seven_day_pct" ]; then
     seven_day_reset=$(format_reset_time "$seven_day_reset_at")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
     seven_day_pct_color=$(color_for_pct "$seven_day_pct")
-    rate_segments+=("${text}weekly${reset} ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct}%${reset} ${dim}⟳${reset} ${text}${seven_day_reset}${reset}")
+    rate_segments+=("${text}${seven_day_label}${reset} ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct}%${reset}$(reset_suffix "$seven_day_reset")")
 fi
 
 # Scoped weekly caps and extra usage exist only in the usage API cache.
@@ -557,15 +584,16 @@ if [ "$cache_valid" = "true" ]; then
         s_reset_fmt=$(format_reset_time "$s_reset")
         s_mark=""
         [ "$s_active" = "true" ] && s_mark="${text}*${reset}"
-        s_seg="${text}${s_name}${reset} ${s_bar} ${s_color}${s_pct}%${reset}${s_mark}"
-        [ -n "$s_reset_fmt" ] && s_seg+=" ${dim}⟳${reset} ${text}${s_reset_fmt}${reset}"
+        s_seg="${text}${s_name}${reset} ${s_bar} ${s_color}${s_pct}%${reset}${s_mark}$(reset_suffix "$s_reset_fmt")"
         rate_segments+=("$s_seg")
     done < <(echo "$usage_data" | jq -c '.limits[]? | select(.kind == "weekly_scoped" and .scope.model.display_name != null)')
 
     if [ "$extra_enabled" = "true" ]; then
         extra_used=$(printf "%.2f" "$extra_used_usd")
 
-        if [ "$extra_unlimited" = "true" ]; then
+        if [ "$extra_unlimited" = "true" ] && [ "$compact" = "true" ]; then
+            extra_segment="${text}↗${reset} ${text}\$${extra_used}${reset}"
+        elif [ "$extra_unlimited" = "true" ]; then
             extra_segment="${text}↗${reset} ${text}\$${extra_used} used${reset} ${dim}· unlimited${reset}"
         else
             extra_limit=$(printf "%.2f" "$extra_limit_usd")
@@ -607,11 +635,12 @@ if [ "$pc_observed" = "true" ]; then
     fi
 
     if [ "$pc_state" = "warm" ]; then
-        pc_left=$(format_reset_time "$pc_expires")
-        [ -n "$pc_left" ] && cache_segment+=" ${dim}⟳${reset} ${text}${pc_left}${reset}"
+        cache_segment+=$(reset_suffix "$(format_reset_time "$pc_expires")")
     else
         cache_segment+=" ${accent}cold${reset}"
-        if [ -n "$pc_recache" ] && [ "$pc_recache" -gt 0 ]; then
+        if [ -n "$pc_recache" ] && [ "$pc_recache" -gt 0 ] && [ "$compact" = "true" ]; then
+            cache_segment+=" ${dim}$(format_tokens "$pc_recache")${reset}"
+        elif [ -n "$pc_recache" ] && [ "$pc_recache" -gt 0 ]; then
             cache_segment+=" ${dim}$(format_tokens "$pc_recache") to re-cache${reset}"
         fi
     fi
@@ -623,18 +652,20 @@ if [ "$pc_observed" = "true" ]; then
 fi
 
 # Tighter caps apply only where they help: they bring the dir segment back onto
-# the model/context/cache row, or the full-cap segment overflows even a row of its
-# own. Otherwise a wrapped dir segment keeps its full caps.
+# the line 1 row with every other line 1 segment, or the full-cap segment
+# overflows even a row of its own. Otherwise a wrapped dir segment keeps its
+# full caps.
 build_dir_segment 24 28
 if [ "$max_width" -gt 0 ]; then
     visible_len "$model_segment"
     line1_len=$_vlen
     visible_len "$context_segment"
     line1_len=$(( line1_len + 3 + _vlen ))
-    if [ -n "$cache_segment" ]; then
-        visible_len "$cache_segment"
+    for seg in "$cache_segment" "$extra_segment"; do
+        [ -z "$seg" ] && continue
+        visible_len "$seg"
         line1_len=$(( line1_len + 3 + _vlen ))
-    fi
+    done
     visible_len "$_dir_segment"
     full_dir_len=$_vlen
     if [ $(( line1_len + 3 + full_dir_len )) -gt "$max_width" ]; then
