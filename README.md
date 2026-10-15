@@ -22,6 +22,24 @@ prompt is never blocked by the Anthropic usage endpoint. The former context
 handoff for reminder hooks is retired; the current runtime does not write a
 context-usage file.
 
+## Git state cache
+
+The directory segment shows the branch and a dirty mark (`*`). Each render of
+each session needs this data, and a large repository makes the Git status scan
+slow. The script keeps the result for each working directory in the runtime
+directory, in a file named `statusline-git-<hash>`. It uses the file again for
+30 seconds.
+
+- `CLAUDE_STATUSLINE_GIT_TTL` sets the time in seconds. The value `0` turns the
+  cache off. An invalid value gives the default of 30.
+- `CLAUDE_STATUSLINE_RUNTIME_DIR` sets the directory. The default is
+  `/tmp/claude`.
+- A missing, corrupt, or unwritable cache file does not cause an error. The
+  script then reads the live Git state.
+- The dirty mark shows only changes to tracked files. An untracked file does
+  not set it.
+- A change shows in the status line up to the TTL after it occurs.
+
 ## Requirements
 
 - Bash
