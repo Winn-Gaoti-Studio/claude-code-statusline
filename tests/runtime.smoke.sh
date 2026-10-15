@@ -234,6 +234,7 @@ new_case() {
   FAKE_JJ_LOG="$CASE_DIR/jj.log"
   FAKE_GIT_LOG="$CASE_DIR/git.log"
   TEST_GIT_TTL=""
+  TEST_GIT_DIR=""
   FAKE_CURL_BLOCK=0
   FAKE_CURL_FAIL=0
   TEST_OAUTH_TOKEN=""
@@ -275,6 +276,7 @@ run_statusline() {
     FAKE_CURL_FAIL="${FAKE_CURL_FAIL:-0}" \
     ${TEST_COLUMNS:+COLUMNS="$TEST_COLUMNS"} \
     ${TEST_GIT_TTL:+CLAUDE_STATUSLINE_GIT_TTL="$TEST_GIT_TTL"} \
+    ${TEST_GIT_DIR:+GIT_DIR="$TEST_GIT_DIR"} \
     bash --noprofile --norc "$HOME_DIR/.claude/statusline.sh" 2>"$STDERR_FILE")" || STATUS=$?
   STDERR_OUTPUT="$(cat "$STDERR_FILE" 2>/dev/null)"
 }
@@ -455,6 +457,52 @@ run_statusline "$(base_input)"
 FIRST_CALLS="$(git_calls)"
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$FIRST_CALLS" "an invalid TTL falls back to the default of 30 seconds"
+
+# A TTL that the shell cannot compare as an integer also falls back to the default.
+new_case git-cache-ttl-overflow
+TEST_GIT_TTL=999999999999999999999
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$FIRST_CALLS" "a TTL out of the integer range falls back to the default of 30 seconds"
+assert_empty "$STDERR_OUTPUT" "a TTL out of the integer range is silent"
+
+# GIT_DIR selects the repository, but the cache key has only the directory. Thus no cache.
+new_case git-cache-git-dir
+TEST_GIT_DIR=/workspace/alpha.git
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+FAKE_GIT_BRANCH=beta
+TEST_GIT_DIR=/workspace/beta.git
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a session with GIT_DIR probes Git on every render"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (beta)" "a session with GIT_DIR shows the live branch"
+if [ -z "$(git_cache_file)" ]; then
+  pass "a session with GIT_DIR writes no Git cache file"
+else
+  fail "a session with GIT_DIR writes no Git cache file"
+fi
+
+# A FIFO in place of the cache file must not block the render.
+new_case git-cache-fifo
+run_statusline "$(base_input)"
+CACHE_FILE="$(git_cache_file)"
+rm -f "$CACHE_FILE"
+mkfifo "$CACHE_FILE"
+FAKE_GIT_BRANCH=fifo
+( sleep 5; [ -p "$CACHE_FILE" ] && printf '' > "$CACHE_FILE" ) >/dev/null 2>&1 &
+FIFO_GUARD=$!
+FIFO_START=$(date +%s)
+run_statusline "$(base_input)"
+FIFO_ELAPSED=$(( $(date +%s) - FIFO_START ))
+kill "$FIFO_GUARD" 2>/dev/null
+wait "$FIFO_GUARD" 2>/dev/null
+if [ "$FIFO_ELAPSED" -lt 4 ]; then
+  pass "a FIFO in place of the Git cache does not block the render"
+else
+  fail "a FIFO in place of the Git cache does not block the render"
+fi
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (fifo)" "a FIFO in place of the Git cache falls back to the live probe"
 
 new_case git-cache-corrupt
 run_statusline "$(base_input)"

@@ -310,8 +310,9 @@ read_git_cache() {
     # Read the Git result for this directory from $git_cache_file. Set
     # git_branch, git_dirty and main_repo only if the file is complete, has the
     # key $git_cache_key, and is younger than the TTL. Any other state returns 1.
+    # Only a regular file is read: a read from a FIFO can block the render.
     local key ts branch dirty repo end
-    [ -r "$git_cache_file" ] || return 1
+    [ -f "$git_cache_file" ] && [ -r "$git_cache_file" ] || return 1
     {
         IFS= read -r key && IFS= read -r ts && IFS= read -r branch &&
             IFS= read -r dirty && IFS= read -r repo && IFS= read -r end
@@ -452,11 +453,19 @@ main_repo=""
 # Every refresh of every session runs this probe, and the status scan is costly
 # in a large repository. Keep the result per directory for CLAUDE_STATUSLINE_GIT_TTL
 # seconds (default 30). A value of 0 turns the cache off. A missing, corrupt or
-# unwritable cache falls back to the live probe.
+# unwritable cache falls back to the live probe. A value that is not a number of
+# 1 to 9 digits is invalid and gives the default.
 git_ttl=${CLAUDE_STATUSLINE_GIT_TTL:-30}
 case "$git_ttl" in
     ''|*[!0-9]*) git_ttl=30 ;;
 esac
+[ "${#git_ttl}" -le 9 ] || git_ttl=30
+# GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR and GIT_INDEX_FILE change the repository
+# or the index that Git reads, but the cache key has only the directory. If one
+# of them is set, the cache is off.
+if [ -n "${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_COMMON_DIR+x}${GIT_INDEX_FILE+x}" ]; then
+    git_ttl=0
+fi
 git_cache_dir=${CLAUDE_STATUSLINE_RUNTIME_DIR:-/tmp/claude}
 git_cache_file=""
 git_cache_key="${cwd}|${git_worktree:+w}"

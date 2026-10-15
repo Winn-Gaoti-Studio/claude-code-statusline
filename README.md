@@ -31,11 +31,16 @@ directory, in a file named `statusline-git-<hash>`. It uses the file again for
 30 seconds.
 
 - `CLAUDE_STATUSLINE_GIT_TTL` sets the time in seconds. The value `0` turns the
-  cache off. An invalid value gives the default of 30.
+  cache off. An invalid value gives the default of 30. A valid value has 1 to 9
+  digits.
+- If `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, or `GIT_INDEX_FILE` is set,
+  the cache is off. These variables change the repository that Git reads, and
+  the cache key has only the directory.
 - `CLAUDE_STATUSLINE_RUNTIME_DIR` sets the directory. The default is
   `/tmp/claude`.
 - A missing, corrupt, or unwritable cache file does not cause an error. The
-  script then reads the live Git state.
+  script then reads the live Git state. The script reads only a regular file, so
+  a FIFO at the path of the file cannot stop the render.
 - The dirty mark shows only changes to tracked files. An untracked file does
   not set it.
 - A change shows in the status line up to the TTL after it occurs.
