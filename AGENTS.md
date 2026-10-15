@@ -30,6 +30,8 @@ do not reintroduce it to satisfy a stale test.
 
 - Rendering must never block on a network request.
 - The cache helper must keep tokens out of process arguments and logs.
+- The Git state cache in `statusline.sh` must never fail a render. On any cache
+  problem, the render falls back to the live Git probe.
 - Date and stat behavior must remain portable across macOS and Linux.
 - The installer must preserve unrelated settings and create a reversible backup.
 - Repeated installation must not replace the original pre-install backup.

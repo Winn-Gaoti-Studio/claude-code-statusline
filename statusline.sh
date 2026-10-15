@@ -306,6 +306,42 @@ format_reset_time() {
     printf "%s" "$result"
 }
 
+read_git_cache() {
+    # Read the Git result for this directory from $git_cache_file. Set
+    # git_branch, git_dirty and main_repo only if the file is complete, has the
+    # key $git_cache_key, and is younger than the TTL. Any other state returns 1.
+    # Only a regular file is read: a read from a FIFO can block the render.
+    local key ts branch dirty repo end
+    [ -f "$git_cache_file" ] && [ -r "$git_cache_file" ] || return 1
+    {
+        IFS= read -r key && IFS= read -r ts && IFS= read -r branch &&
+            IFS= read -r dirty && IFS= read -r repo && IFS= read -r end
+    } 2>/dev/null <"$git_cache_file" || return 1
+    [ "$key" = "$git_cache_key" ] && [ "$end" = "end" ] || return 1
+    case "$ts" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "${#ts}" -le 12 ] || return 1
+    [ "$(( now_epoch - ts ))" -ge 0 ] && [ "$(( now_epoch - ts ))" -lt "$git_ttl" ] || return 1
+    git_branch=$branch
+    git_dirty=$dirty
+    main_repo=$repo
+}
+
+write_git_cache() {
+    # Write the Git result atomically. The temporary file lives in the same
+    # directory, so mv replaces the old file in one step. A failure is silent.
+    (
+        umask 077
+        tmp="$git_cache_file.$$"
+        [ ! -d "$git_cache_file" ] || exit 1
+        [ -d "$git_cache_dir" ] || mkdir -p "$git_cache_dir" || exit 1
+        printf '%s\n%s\n%s\n%s\n%s\nend\n' "$git_cache_key" "$now_epoch" \
+            "$git_branch" "$git_dirty" "$main_repo" >"$tmp" || { rm -f "$tmp"; exit 1; }
+        mv -f "$tmp" "$git_cache_file" || { rm -f "$tmp"; exit 1; }
+    ) >/dev/null 2>&1 || true
+}
+
 # ── Extract JSON data ───────────────────────────────────
 # rate_limits and prompt_cache are absent until the first API response, and
 # each rate-limit window can be absent on its own; a non-number maps to "".
@@ -412,20 +448,66 @@ dirname=$(basename "$cwd")
 
 git_branch=""
 git_dirty=""
-if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-    # A jj workspace leaves Git HEAD detached, and a bookmark takes the place of
-    # the branch: show the newest bookmark on the working-copy commit or its
-    # parent. --ignore-working-copy and --at-op @ keep the query read-only (no
-    # snapshot, no new operation), so a render never changes the operation log.
-    if [ -z "$git_branch" ] && command -v jj >/dev/null 2>&1; then
-        git_branch=$(cd "$cwd" 2>/dev/null && jj --ignore-working-copy --at-op @ --no-pager --color never \
-            log --no-graph -r 'latest((@ | @-) & bookmarks())' \
-            -T 'local_bookmarks.map(|b| b.name()).join(" ")' 2>/dev/null)
+main_repo=""
+
+# Every refresh of every session runs this probe, and the status scan is costly
+# in a large repository. Keep the result per directory for CLAUDE_STATUSLINE_GIT_TTL
+# seconds (default 30). A value of 0 turns the cache off. A missing, corrupt or
+# unwritable cache falls back to the live probe. A value that is not a number of
+# 1 to 9 digits is invalid and gives the default.
+git_ttl=${CLAUDE_STATUSLINE_GIT_TTL:-30}
+case "$git_ttl" in
+    ''|*[!0-9]*) git_ttl=30 ;;
+esac
+[ "${#git_ttl}" -le 9 ] || git_ttl=30
+# GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR and GIT_INDEX_FILE change the repository
+# or the index that Git reads, but the cache key has only the directory. If one
+# of them is set, the cache is off.
+if [ -n "${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_COMMON_DIR+x}${GIT_INDEX_FILE+x}" ]; then
+    git_ttl=0
+fi
+git_cache_dir=${CLAUDE_STATUSLINE_RUNTIME_DIR:-/tmp/claude}
+git_cache_file=""
+git_cache_key="${cwd}|${git_worktree:+w}"
+if [ "$git_ttl" -gt 0 ]; then
+    case "$cwd" in
+        *$'\n'*) ;;
+        *)
+            git_cache_hash=$(printf '%s' "$cwd" | cksum 2>/dev/null)
+            git_cache_hash=${git_cache_hash// /-}
+            [ -n "$git_cache_hash" ] && git_cache_file="$git_cache_dir/statusline-git-$git_cache_hash"
+            ;;
+    esac
+fi
+
+if [ -z "$git_cache_file" ] || ! read_git_cache; then
+    if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
+        # A jj workspace leaves Git HEAD detached, and a bookmark takes the place of
+        # the branch: show the newest bookmark on the working-copy commit or its
+        # parent. --ignore-working-copy and --at-op @ keep the query read-only (no
+        # snapshot, no new operation), so a render never changes the operation log.
+        if [ -z "$git_branch" ] && command -v jj >/dev/null 2>&1; then
+            git_branch=$(cd "$cwd" 2>/dev/null && jj --ignore-working-copy --at-op @ --no-pager --color never \
+                log --no-graph -r 'latest((@ | @-) & bookmarks())' \
+                -T 'local_bookmarks.map(|b| b.name()).join(" ")' 2>/dev/null)
+        fi
+        # Untracked files are not scanned: that scan costs most of the time.
+        if [ -n "$(git -C "$cwd" --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+            git_dirty="*"
+        fi
+        if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
+            common_git=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)
+            if [ -n "$common_git" ]; then
+                case "$common_git" in
+                    /*) ;;
+                    *) common_git="$cwd/$common_git" ;;
+                esac
+                main_repo=$(basename "$(dirname "$common_git")")
+            fi
+        fi
     fi
-    if [ -n "$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null)" ]; then
-        git_dirty="*"
-    fi
+    [ -n "$git_cache_file" ] && write_git_cache
 fi
 
 # Model and effort are grouped: a plain space (not sep) keeps them visually
@@ -447,15 +529,6 @@ context_segment="${pct_color}${pct_used}%${reset} ${dim}${used_tokens}/${total_t
 # prefix from the branch. Long names get middle-ellipsis truncation so the
 # head and tail (issue ID, last word) stay recognizable.
 if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
-    main_repo=""
-    common_git=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)
-    if [ -n "$common_git" ]; then
-        case "$common_git" in
-            /*) ;;
-            *) common_git="$cwd/$common_git" ;;
-        esac
-        main_repo=$(basename "$(dirname "$common_git")")
-    fi
     [ -z "$main_repo" ] && main_repo="$dirname"
     display_branch="${git_branch#*/}"
 fi

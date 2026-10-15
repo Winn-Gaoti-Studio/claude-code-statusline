@@ -8,6 +8,7 @@ STATUSLINE_SOURCE="$ROOT/statusline.sh"
 SUBAGENT_SOURCE="$ROOT/subagent-statusline.sh"
 HELPER_SOURCE="$ROOT/lib/statusline-cache.sh"
 REAL_JQ="$(command -v jq)"
+REAL_GIT="$(command -v git)"
 ORIGINAL_PATH="$PATH"
 TEMP_ROOT="$(mktemp -d)" || exit 1
 FAILED=0
@@ -167,6 +168,7 @@ EOF
 
   cat > "$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
+[ -z "${FAKE_GIT_LOG:-}" ] || printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
 if [ "${1:-}" = "-C" ]; then
   shift 2
 fi
@@ -191,7 +193,8 @@ case "${1:-}" in
     ;;
   --no-optional-locks)
     shift
-    [ "${1:-}" = "status" ] && [ "${2:-}" = "--porcelain" ] && [ "$#" -eq 2 ] || exit 91
+    [ "${1:-}" = "status" ] && [ "${2:-}" = "--porcelain" ] \
+      && [ "${3:-}" = "--untracked-files=no" ] && [ "$#" -eq 3 ] || exit 91
     [ "${FAKE_GIT_MODE:-clean}" = "dirty" ] && printf ' M tracked-file\n'
     ;;
   *)
@@ -229,6 +232,9 @@ new_case() {
   FAKE_JJ_MODE=none
   FAKE_JJ_BOOKMARK=""
   FAKE_JJ_LOG="$CASE_DIR/jj.log"
+  FAKE_GIT_LOG="$CASE_DIR/git.log"
+  TEST_GIT_TTL=""
+  TEST_GIT_DIR=""
   FAKE_CURL_BLOCK=0
   FAKE_CURL_FAIL=0
   TEST_OAUTH_TOKEN=""
@@ -257,6 +263,7 @@ run_statusline() {
     FAKE_JJ_MODE="${FAKE_JJ_MODE:-none}" \
     FAKE_JJ_BOOKMARK="${FAKE_JJ_BOOKMARK:-}" \
     FAKE_JJ_LOG="$FAKE_JJ_LOG" \
+    FAKE_GIT_LOG="$FAKE_GIT_LOG" \
     FAKE_GIT_COMMON_DIR="${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}" \
     FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     FAKE_SECURITY_LOG="$FAKE_SECURITY_LOG" \
@@ -268,6 +275,8 @@ run_statusline() {
     FAKE_CURL_BLOCK="${FAKE_CURL_BLOCK:-0}" \
     FAKE_CURL_FAIL="${FAKE_CURL_FAIL:-0}" \
     ${TEST_COLUMNS:+COLUMNS="$TEST_COLUMNS"} \
+    ${TEST_GIT_TTL:+CLAUDE_STATUSLINE_GIT_TTL="$TEST_GIT_TTL"} \
+    ${TEST_GIT_DIR:+GIT_DIR="$TEST_GIT_DIR"} \
     bash --noprofile --norc "$HOME_DIR/.claude/statusline.sh" 2>"$STDERR_FILE")" || STATUS=$?
   STDERR_OUTPUT="$(cat "$STDERR_FILE" 2>/dev/null)"
 }
@@ -371,6 +380,192 @@ run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$c
 assert_status 0 "a detached Git HEAD outside jj exits successfully"
 assert_not_contains "$(strip_ansi "$OUTPUT")" "(" "a detached Git HEAD outside jj shows no branch"
 assert_empty "$STDERR_OUTPUT" "a detached Git HEAD outside jj has no stderr"
+
+# The Git result is cached per directory, so a render inside the TTL starts no Git process.
+git_calls() {
+  if [ -f "$FAKE_GIT_LOG" ]; then
+    wc -l < "$FAKE_GIT_LOG" | tr -d ' '
+  else
+    printf '0'
+  fi
+}
+
+git_cache_file() {
+  find "$RUNTIME_DIR" -maxdepth 1 -name 'statusline-git-*' -print -quit 2>/dev/null
+}
+
+# Set the stored time of a cache file to epoch second 1, so the file is older than any TTL.
+age_git_cache() {
+  awk 'NR == 2 { print 1; next } { print }' "$1" > "$1.aged" && mv -f "$1.aged" "$1"
+}
+
+real_git() {
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$REAL_GIT" "$@"
+}
+
+new_case git-cache-hit
+run_statusline "$(base_input)"
+FIRST_OUTPUT="$OUTPUT"
+FIRST_CALLS="$(git_calls)"
+assert_equal "$FIRST_CALLS" "3" "the first render probes Git three times"
+if [ -n "$(git_cache_file)" ]; then
+  pass "the first render writes a Git cache file"
+else
+  fail "the first render writes a Git cache file"
+fi
+FAKE_GIT_BRANCH=changed
+FAKE_GIT_MODE=dirty
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$FIRST_CALLS" "a render inside the TTL starts no Git process"
+assert_equal "$OUTPUT" "$FIRST_OUTPUT" "a render inside the TTL shows the cached branch and dirty state"
+assert_empty "$STDERR_OUTPUT" "a cached render has no stderr"
+
+# A different directory is a different cache entry.
+run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/other"')"
+assert_contains "$(strip_ansi "$OUTPUT")" "other (changed*)" "a new directory does not reuse the cache of another directory"
+assert_equal "$(git_calls)" "$((FIRST_CALLS + 3))" "a new directory probes Git again"
+
+# An old cache file is ignored and replaced.
+new_case git-cache-expired
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+age_git_cache "$(git_cache_file)"
+FAKE_GIT_BRANCH=changed
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a render after the TTL probes Git again"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "a render after the TTL shows the live branch"
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "the live result replaces the old cache file"
+
+new_case git-cache-ttl-zero
+TEST_GIT_TTL=0
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+FAKE_GIT_BRANCH=changed
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a TTL of 0 probes Git on every render"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "a TTL of 0 shows the live branch"
+if [ -z "$(git_cache_file)" ]; then
+  pass "a TTL of 0 writes no Git cache file"
+else
+  fail "a TTL of 0 writes no Git cache file"
+fi
+
+new_case git-cache-ttl-invalid
+TEST_GIT_TTL=soon
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$FIRST_CALLS" "an invalid TTL falls back to the default of 30 seconds"
+
+# A TTL that the shell cannot compare as an integer also falls back to the default.
+new_case git-cache-ttl-overflow
+TEST_GIT_TTL=999999999999999999999
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$FIRST_CALLS" "a TTL out of the integer range falls back to the default of 30 seconds"
+assert_empty "$STDERR_OUTPUT" "a TTL out of the integer range is silent"
+
+# GIT_DIR selects the repository, but the cache key has only the directory. Thus no cache.
+new_case git-cache-git-dir
+TEST_GIT_DIR=/workspace/alpha.git
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+FAKE_GIT_BRANCH=beta
+TEST_GIT_DIR=/workspace/beta.git
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a session with GIT_DIR probes Git on every render"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (beta)" "a session with GIT_DIR shows the live branch"
+if [ -z "$(git_cache_file)" ]; then
+  pass "a session with GIT_DIR writes no Git cache file"
+else
+  fail "a session with GIT_DIR writes no Git cache file"
+fi
+
+# A FIFO in place of the cache file must not block the render.
+new_case git-cache-fifo
+run_statusline "$(base_input)"
+CACHE_FILE="$(git_cache_file)"
+rm -f "$CACHE_FILE"
+mkfifo "$CACHE_FILE"
+FAKE_GIT_BRANCH=fifo
+( sleep 5; [ -p "$CACHE_FILE" ] && printf '' > "$CACHE_FILE" ) >/dev/null 2>&1 &
+FIFO_GUARD=$!
+FIFO_START=$(date +%s)
+run_statusline "$(base_input)"
+FIFO_ELAPSED=$(( $(date +%s) - FIFO_START ))
+kill "$FIFO_GUARD" 2>/dev/null
+wait "$FIFO_GUARD" 2>/dev/null
+if [ "$FIFO_ELAPSED" -lt 4 ]; then
+  pass "a FIFO in place of the Git cache does not block the render"
+else
+  fail "a FIFO in place of the Git cache does not block the render"
+fi
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (fifo)" "a FIFO in place of the Git cache falls back to the live probe"
+
+new_case git-cache-corrupt
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+CACHE_FILE="$(git_cache_file)"
+printf 'garbage\n' > "$CACHE_FILE"
+FAKE_GIT_BRANCH=changed
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a corrupt Git cache falls back to the live probe"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "a corrupt Git cache shows the live branch"
+assert_empty "$STDERR_OUTPUT" "a corrupt Git cache is silent"
+head -n 5 "$CACHE_FILE" > "$CACHE_FILE.short" && mv -f "$CACHE_FILE.short" "$CACHE_FILE"
+FAKE_GIT_BRANCH=truncated
+run_statusline "$(base_input)"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (truncated)" "a truncated Git cache falls back to the live probe"
+rm -f "$CACHE_FILE"
+mkdir "$CACHE_FILE"
+FAKE_GIT_BRANCH=directory
+run_statusline "$(base_input)"
+assert_status 0 "a directory in place of the Git cache keeps the statusline successful"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (directory)" "a directory in place of the Git cache falls back to the live probe"
+assert_empty "$STDERR_OUTPUT" "a directory in place of the Git cache is silent"
+
+new_case git-cache-unwritable
+printf 'not a directory\n' > "$RUNTIME_DIR"
+run_statusline "$(base_input)"
+FIRST_CALLS="$(git_calls)"
+FAKE_GIT_BRANCH=changed
+run_statusline "$(base_input)"
+assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "an unwritable runtime directory probes Git on every render"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "an unwritable runtime directory shows the live branch"
+assert_empty "$STDERR_OUTPUT" "an unwritable runtime directory is silent"
+
+# The dirty mark ignores untracked files and follows changes to tracked files.
+new_case dirty-tracked-only
+rm -f "$FAKE_BIN/git"
+TEST_GIT_TTL=0
+REPO_DIR="$CASE_DIR/repo"
+mkdir -p "$REPO_DIR"
+real_git -C "$REPO_DIR" init -q
+real_git -C "$REPO_DIR" symbolic-ref HEAD refs/heads/main
+printf 'one\n' > "$REPO_DIR/tracked"
+real_git -C "$REPO_DIR" add tracked
+real_git -C "$REPO_DIR" -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false commit -q -m init
+REPO_INPUT="$(base_input | "$REAL_JQ" -c --arg cwd "$REPO_DIR" '.cwd=$cwd')"
+run_statusline "$REPO_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (main)" "a clean repository shows no dirty mark"
+printf 'new\n' > "$REPO_DIR/untracked"
+run_statusline "$REPO_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (main)" "an untracked file alone shows no dirty mark"
+printf 'two\n' > "$REPO_DIR/tracked"
+run_statusline "$REPO_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (main*)" "a modified tracked file shows the dirty mark"
+real_git -C "$REPO_DIR" checkout -q -- tracked
+run_statusline "$REPO_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (main)" "a restored tracked file clears the dirty mark"
+real_git -C "$REPO_DIR" add untracked
+run_statusline "$REPO_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (main*)" "a staged new file shows the dirty mark"
+real_git -C "$REPO_DIR" reset -q
+rm -f "$REPO_DIR/tracked"
+run_statusline "$REPO_INPUT"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (main*)" "a deleted tracked file shows the dirty mark"
 
 # Fresh usage renders immediately without an API refresh.
 new_case fresh-cache
