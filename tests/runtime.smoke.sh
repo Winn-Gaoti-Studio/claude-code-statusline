@@ -186,7 +186,8 @@ case "${1:-}" in
     ;;
   symbolic-ref)
     [ "${2:-}" = "--short" ] && [ "${3:-}" = "HEAD" ] || exit 91
-    printf '%s\n' "${FAKE_GIT_BRANCH:-main}"
+    [ -n "${FAKE_GIT_BRANCH-main}" ] || exit 128
+    printf '%s\n' "${FAKE_GIT_BRANCH-main}"
     ;;
   --no-optional-locks)
     shift
@@ -200,7 +201,14 @@ case "${1:-}" in
 esac
 EOF
 
-  chmod +x "$FAKE_BIN/jq" "$FAKE_BIN/security" "$FAKE_BIN/secret-tool" "$FAKE_BIN/curl" "$FAKE_BIN/git"
+  cat > "$FAKE_BIN/jj" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD $*" >> "$FAKE_JJ_LOG"
+[ "${FAKE_JJ_MODE:-none}" = "repo" ] || exit 1
+printf '%s' "${FAKE_JJ_BOOKMARK:-}"
+EOF
+
+  chmod +x "$FAKE_BIN/jq" "$FAKE_BIN/security" "$FAKE_BIN/secret-tool" "$FAKE_BIN/curl" "$FAKE_BIN/git" "$FAKE_BIN/jj"
 }
 
 new_case() {
@@ -218,6 +226,9 @@ new_case() {
   FAKE_GIT_MODE=clean
   FAKE_GIT_BRANCH=main
   FAKE_GIT_COMMON_DIR=/workspace/project/.git
+  FAKE_JJ_MODE=none
+  FAKE_JJ_BOOKMARK=""
+  FAKE_JJ_LOG="$CASE_DIR/jj.log"
   FAKE_CURL_BLOCK=0
   FAKE_CURL_FAIL=0
   TEST_OAUTH_TOKEN=""
@@ -242,7 +253,10 @@ run_statusline() {
     CLAUDE_STATUSLINE_RUNTIME_DIR="$RUNTIME_DIR" \
     CLAUDE_CODE_OAUTH_TOKEN="${TEST_OAUTH_TOKEN:-}" \
     FAKE_GIT_MODE="${FAKE_GIT_MODE:-clean}" \
-    FAKE_GIT_BRANCH="${FAKE_GIT_BRANCH:-main}" \
+    FAKE_GIT_BRANCH="${FAKE_GIT_BRANCH-main}" \
+    FAKE_JJ_MODE="${FAKE_JJ_MODE:-none}" \
+    FAKE_JJ_BOOKMARK="${FAKE_JJ_BOOKMARK:-}" \
+    FAKE_JJ_LOG="$FAKE_JJ_LOG" \
     FAKE_GIT_COMMON_DIR="${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}" \
     FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     FAKE_SECURITY_LOG="$FAKE_SECURITY_LOG" \
@@ -318,6 +332,45 @@ WORKTREE_INPUT="$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic-worktree" |
 run_statusline "$WORKTREE_INPUT"
 EXPECTED_WORKTREE="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mproject\033[0m 🌳 \033[38;2;195;165;255mlong-topic\033[38;2;240;120;135m*\033[0m')"
 assert_equal "$OUTPUT" "$EXPECTED_WORKTREE" "worktree ANSI snapshot is unchanged"
+if [ ! -e "$FAKE_JJ_LOG" ]; then
+  pass "a checked-out Git branch does not run jj"
+else
+  fail "a checked-out Git branch does not run jj"
+fi
+
+# A jj workspace leaves Git HEAD detached; the bookmark takes the place of the branch.
+new_case jj-bookmark
+mkdir -p "$CASE_DIR/repo"
+FAKE_GIT_MODE=dirty
+FAKE_GIT_BRANCH=""
+FAKE_JJ_MODE=repo
+FAKE_JJ_BOOKMARK=topic
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
+assert_status 0 "a jj workspace statusline exits successfully"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo (topic*)" "a jj workspace shows its bookmark and dirty state"
+JJ_CALL="$(cat "$FAKE_JJ_LOG" 2>/dev/null)"
+assert_contains "$JJ_CALL" "$CASE_DIR/repo " "jj runs in the session directory"
+assert_contains "$JJ_CALL" "--ignore-working-copy" "the jj query does not snapshot the working copy"
+assert_contains "$JJ_CALL" "--at-op @" "the jj query does not merge or write operations"
+assert_empty "$STDERR_OUTPUT" "a jj workspace statusline has no stderr"
+
+new_case jj-worktree
+mkdir -p "$CASE_DIR/topic-worktree"
+FAKE_GIT_MODE=clean
+FAKE_GIT_BRANCH=""
+FAKE_JJ_MODE=repo
+FAKE_JJ_BOOKMARK=topic
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic-worktree" '.cwd=$cwd | .workspace.git_worktree="topic-worktree"')"
+assert_contains "$(strip_ansi "$OUTPUT")" "project 🌳 topic" "a jj worktree shows the main repository and its bookmark"
+
+new_case detached-without-jj
+mkdir -p "$CASE_DIR/repo"
+FAKE_GIT_BRANCH=""
+FAKE_JJ_MODE=none
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
+assert_status 0 "a detached Git HEAD outside jj exits successfully"
+assert_not_contains "$(strip_ansi "$OUTPUT")" "(" "a detached Git HEAD outside jj shows no branch"
+assert_empty "$STDERR_OUTPUT" "a detached Git HEAD outside jj has no stderr"
 
 # Fresh usage renders immediately without an API refresh.
 new_case fresh-cache
