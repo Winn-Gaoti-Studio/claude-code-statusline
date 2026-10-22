@@ -581,8 +581,7 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
       "five_hour_reset_at="  + ((.five_hour.resets_at // "")             | @sh),
       "seven_day_reset_at="  + ((.seven_day.resets_at // "")            | @sh),
       "extra_used_usd="      + ((.extra_usage.used_credits // 0)  / 100  | tostring | @sh),
-      "extra_limit_usd="     + ((.extra_usage.monthly_limit // 0) / 100  | tostring | @sh),
-      "extra_pct="           + ((.extra_usage.utilization // 0)  | round | tostring | @sh)
+      "extra_limit_usd="     + ((.extra_usage.monthly_limit // 0) / 100  | tostring | @sh)
     ')"
 fi
 
@@ -673,30 +672,25 @@ if [ "$cache_valid" = "true" ]; then
     if [ "$extra_enabled" = "true" ]; then
         extra_used=$(printf "%.2f" "$extra_used_usd")
 
+        # The usage API gives no billing-cycle date, so the reset is the first
+        # day of the next month. The full form shows it with or without a
+        # monthly cap. The compact form omits it, so that line 1 stays on one
+        # row in a split pane.
+        extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        if [ -z "$extra_reset" ]; then
+            extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        fi
+
         if [ "$extra_unlimited" = "true" ] && [ "$compact" = "true" ]; then
             extra_segment="${text}↗${reset} ${text}\$${extra_used}${reset}"
         elif [ "$extra_unlimited" = "true" ]; then
             extra_segment="${text}↗${reset} ${text}\$${extra_used} used${reset} ${dim}· unlimited${reset}"
         else
             extra_limit=$(printf "%.2f" "$extra_limit_usd")
-
-            # Billing-cycle reset date only matters once this month's credits
-            # are actually used up; hide it while there's still headroom.
-            if [ "$extra_pct" -ge 100 ] 2>/dev/null; then
-                extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-                if [ -z "$extra_reset" ]; then
-                    extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-                fi
-            fi
-
             extra_segment="${text}↗${reset} ${text}\$${extra_used}${dim}/${reset}${text}\$${extra_limit}${reset}"
         fi
+        [ "$compact" = "true" ] || extra_segment+=$(reset_suffix "$extra_reset")
     fi
-fi
-
-if [ -n "$extra_reset" ] && [ "${#rate_segments[@]}" -gt 0 ]; then
-    last_rate=$(( ${#rate_segments[@]} - 1 ))
-    rate_segments[$last_rate]+=" ${dim}resets ${extra_reset}${reset}"
 fi
 
 # ── Prompt cache (native stdin, v2.1.251+) ──────────────

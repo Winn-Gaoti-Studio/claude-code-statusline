@@ -292,6 +292,14 @@ write_usage_json() {
   printf '%s\n' "$2" > "$1"
 }
 
+# The first day of the next month in lower case, as the billing reset shows it.
+next_billing_reset() {
+  local day
+  day=$(date -v+1m -v1d +"%b %-d" 2>/dev/null) || day=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d")
+  printf '%s' "$day" | tr '[:upper:]' '[:lower:]'
+}
+BILLING_RESET="$(next_billing_reset)"
+
 # ISO-8601 UTC like the usage API's resets_at, on GNU or BSD date.
 iso_utc() {
   date -u -d "@$1" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%S+00:00
@@ -844,8 +852,10 @@ run_statusline "$(base_input | "$REAL_JQ" -c --argjson five "$((NOW + 2 * 3600 +
   '.rate_limits = {five_hour: {used_percentage: 55, resets_at: $five}}')"
 PLAIN="$(strip_ansi "$OUTPUT")"
 assert_contains "$PLAIN" "current ══════ 55% ⟳ in 2h │ weekly ══════ 22% ⟳ in 3d 2h" "a window absent from stdin falls back to the cache"
-assert_contains "$PLAIN" "│ Fable ══════ 30%* ⟳ in 3d 2h resets " "scoped weekly caps and the billing reset stay on line 2"
-assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "│ ↗ \$50.00/\$50.00" "extra usage stays on line 1"
+assert_contains "$PLAIN" "│ Fable ══════ 30%* ⟳ in 3d 2h" "scoped weekly caps stay on line 2"
+assert_not_contains "$(printf '%s\n' "$PLAIN" | tail -n 1)" "$BILLING_RESET" "the billing reset is not on line 2"
+assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "│ ↗ \$50.00/\$50.00 ⟳ $BILLING_RESET" \
+  "extra usage and its billing reset stay on line 1"
 
 # Prompt cache: warm countdown, cold rebuild cost, misses, and hidden states.
 new_case prompt-cache-warm
@@ -969,7 +979,8 @@ write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
 TEST_COLUMNS=100
 run_statusline "$(compact_input /workspace/harness)"
 assert_contains "$(strip_ansi "$OUTPUT")" "current ══════ 95% ⟳ in 1h 38m" "100 columns keep the full form"
-assert_contains "$(strip_ansi "$OUTPUT")" "↗ \$87.25 used · unlimited" "100 columns keep the full extra usage text"
+assert_contains "$(strip_ansi "$OUTPUT")" "↗ \$87.25 used · unlimited ⟳ $BILLING_RESET" \
+  "an unlimited cap shows the billing reset in the full form"
 
 # Shorter dir/branch caps apply only where they keep the dir segment on the
 # model/context/cache row, or where the full-cap segment overflows a row of its own.
