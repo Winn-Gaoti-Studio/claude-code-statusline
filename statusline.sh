@@ -409,12 +409,14 @@ if [ "$compact" = "true" ]; then
 fi
 
 reset_suffix() {
-    # The reset marker and time for $1, or nothing when the time is unknown.
+    # The reset time for $1, or nothing when the time is unknown. The full form
+    # starts with a word such as "in", so only the compact form adds a "~" mark.
+    # All marks are ASCII because terminals show other symbols at different widths.
     [ -z "$1" ] && return
     if [ "$compact" = "true" ]; then
-        printf " ${dim}⟳${reset}${text}%s${reset}" "$1"
+        printf " ${dim}~${reset}${text}%s${reset}" "$1"
     else
-        printf " ${dim}⟳${reset} ${text}%s${reset}" "$1"
+        printf " ${text}%s${reset}" "$1"
     fi
 }
 
@@ -537,7 +539,7 @@ build_dir_segment() {
     # $1/$2: directory and branch caps. Sets _dir_segment.
     local dir_cap=$1 branch_cap=$2
     if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
-        _dir_segment="${accent}$(truncate_middle "$main_repo" "$dir_cap")${reset} 🌳 ${accent2}$(truncate_middle "$display_branch" "$branch_cap")${crit}${git_dirty}${reset}"
+        _dir_segment="${accent}$(truncate_middle "$main_repo" "$dir_cap")${reset} @ ${accent2}$(truncate_middle "$display_branch" "$branch_cap")${crit}${git_dirty}${reset}"
     elif [ -n "$git_branch" ]; then
         _dir_segment="${accent}$(truncate_middle "$dirname" "$dir_cap")${reset}"
         _dir_segment+=" ${accent2}($(truncate_middle "$git_branch" "$branch_cap")${crit}${git_dirty}${accent2})${reset}"
@@ -681,15 +683,17 @@ if [ "$cache_valid" = "true" ]; then
             extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
         fi
 
+        extra_label="extra "
+        [ "$compact" = "true" ] && extra_label="+"
         if [ "$extra_unlimited" = "true" ] && [ "$compact" = "true" ]; then
-            extra_segment="${text}↗${reset} ${text}\$${extra_used}${reset}"
+            extra_segment="${text}${extra_label}\$${extra_used}${reset}"
         elif [ "$extra_unlimited" = "true" ]; then
-            extra_segment="${text}↗${reset} ${text}\$${extra_used} used${reset} ${dim}· unlimited${reset}"
+            extra_segment="${text}${extra_label}\$${extra_used} used${reset} ${dim}· unlimited${reset}"
         else
             extra_limit=$(printf "%.2f" "$extra_limit_usd")
-            extra_segment="${text}↗${reset} ${text}\$${extra_used}${dim}/${reset}${text}\$${extra_limit}${reset}"
+            extra_segment="${text}${extra_label}\$${extra_used}${dim}/${reset}${text}\$${extra_limit}${reset}"
         fi
-        [ "$compact" = "true" ] || extra_segment+=$(reset_suffix "$extra_reset")
+        [ "$compact" = "true" ] || extra_segment+=$(reset_suffix "resets $extra_reset")
     fi
 fi
 
@@ -722,7 +726,7 @@ if [ "$pc_observed" = "true" ]; then
     fi
 
     if [ "$pc_misses" -gt 0 ] 2>/dev/null; then
-        cache_segment+=" ${crit}✗${pc_misses}${reset}"
+        cache_segment+=" ${crit}x${pc_misses}${reset}"
         [ -n "$pc_cause" ] && cache_segment+=" ${dim}$(short_miss_cause "$pc_cause")${reset}"
     fi
 fi

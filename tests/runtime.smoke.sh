@@ -347,7 +347,7 @@ FAKE_GIT_BRANCH=gaotity/long-topic
 FAKE_GIT_COMMON_DIR=/workspace/project/.git
 WORKTREE_INPUT="$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic-worktree" | .workspace.git_worktree="/workspace/project/.git/worktrees/topic-worktree"')"
 run_statusline "$WORKTREE_INPUT"
-EXPECTED_WORKTREE="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mproject\033[0m 🌳 \033[38;2;195;165;255mlong-topic\033[38;2;240;120;135m*\033[0m')"
+EXPECTED_WORKTREE="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mproject\033[0m @ \033[38;2;195;165;255mlong-topic\033[38;2;240;120;135m*\033[0m')"
 assert_equal "$OUTPUT" "$EXPECTED_WORKTREE" "worktree ANSI snapshot is unchanged"
 if [ ! -e "$FAKE_JJ_LOG" ]; then
   pass "a checked-out Git branch does not run jj"
@@ -378,7 +378,7 @@ FAKE_GIT_BRANCH=""
 FAKE_JJ_MODE=repo
 FAKE_JJ_BOOKMARK=topic
 run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic-worktree" '.cwd=$cwd | .workspace.git_worktree="topic-worktree"')"
-assert_contains "$(strip_ansi "$OUTPUT")" "project 🌳 topic" "a jj worktree shows the main repository and its bookmark"
+assert_contains "$(strip_ansi "$OUTPUT")" "project @ topic" "a jj worktree shows the main repository and its bookmark"
 
 new_case detached-without-jj
 mkdir -p "$CASE_DIR/repo"
@@ -805,8 +805,8 @@ NATIVE_INPUT="$(base_input | "$REAL_JQ" -c \
   '.rate_limits = {five_hour: {used_percentage: 55.4, resets_at: $five}, seven_day: {used_percentage: 66.6, resets_at: $seven}}')"
 run_statusline "$NATIVE_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$PLAIN" "current ══════ 55% ⟳ in 2d 1h" "native five-hour window overrides the cache"
-assert_contains "$PLAIN" "weekly ══════ 67% ⟳ in 5d 2h" "native seven-day window overrides the cache"
+assert_contains "$PLAIN" "current ══════ 55% in 2d 1h" "native five-hour window overrides the cache"
+assert_contains "$PLAIN" "weekly ══════ 67% in 5d 2h" "native seven-day window overrides the cache"
 assert_not_contains "$PLAIN" "11%" "cached five-hour usage yields to stdin"
 
 # Without a cache, stdin alone renders whichever windows it carries.
@@ -817,7 +817,7 @@ NATIVE_ONLY_INPUT="$(base_input | "$REAL_JQ" -c --argjson five "$((NOW + 3 * 360
 run_statusline "$NATIVE_ONLY_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 assert_status 0 "stdin-only rate limits keep the statusline successful"
-assert_contains "$PLAIN" "current ══════ 12% ⟳ in 3h" "stdin-only five-hour window renders without a cache"
+assert_contains "$PLAIN" "current ══════ 12% in 3h" "stdin-only five-hour window renders without a cache"
 assert_not_contains "$PLAIN" "weekly" "an absent seven-day window stays hidden"
 
 # An idle session's stdin snapshot of the same window yields to a higher
@@ -830,7 +830,7 @@ write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" \
 run_statusline "$(base_input | "$REAL_JQ" -c --argjson five "$FIVE_RESET" \
   '.rate_limits = {five_hour: {used_percentage: 20, resets_at: $five}}')"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$PLAIN" "current ══════ 70% ⟳ in 2h" "a fresher cache reading of the same window beats stale stdin"
+assert_contains "$PLAIN" "current ══════ 70% in 2h" "a fresher cache reading of the same window beats stale stdin"
 assert_not_contains "$PLAIN" "20%" "stale stdin usage for the same window stays hidden"
 
 new_case newer-native-window
@@ -840,7 +840,7 @@ write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" \
 run_statusline "$(base_input | "$REAL_JQ" -c --argjson five "$((NOW + 4 * 3600 + 30))" \
   '.rate_limits = {five_hour: {used_percentage: 5, resets_at: $five}}')"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$PLAIN" "current ══════ 5% ⟳ in 4h" "a later native window replaces the cache's elapsed one"
+assert_contains "$PLAIN" "current ══════ 5% in 4h" "a later native window replaces the cache's elapsed one"
 
 # Windows stdin lacks, scoped weekly caps, and extra usage still come from the cache.
 new_case per-window-fallback
@@ -851,10 +851,10 @@ write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" \
 run_statusline "$(base_input | "$REAL_JQ" -c --argjson five "$((NOW + 2 * 3600 + 30))" \
   '.rate_limits = {five_hour: {used_percentage: 55, resets_at: $five}}')"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$PLAIN" "current ══════ 55% ⟳ in 2h │ weekly ══════ 22% ⟳ in 3d 2h" "a window absent from stdin falls back to the cache"
-assert_contains "$PLAIN" "│ Fable ══════ 30%* ⟳ in 3d 2h" "scoped weekly caps stay on line 2"
+assert_contains "$PLAIN" "current ══════ 55% in 2h │ weekly ══════ 22% in 3d 2h" "a window absent from stdin falls back to the cache"
+assert_contains "$PLAIN" "│ Fable ══════ 30%* in 3d 2h" "scoped weekly caps stay on line 2"
 assert_not_contains "$(printf '%s\n' "$PLAIN" | tail -n 1)" "$BILLING_RESET" "the billing reset is not on line 2"
-assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "│ ↗ \$50.00/\$50.00 ⟳ $BILLING_RESET" \
+assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "│ extra \$50.00/\$50.00 resets $BILLING_RESET" \
   "extra usage and its billing reset stay on line 1"
 
 # Prompt cache: warm countdown, cold rebuild cost, misses, and hidden states.
@@ -864,17 +864,17 @@ WARM_INPUT="$(base_input | "$REAL_JQ" -c --argjson exp "$((NOW + 52 * 60 + 30))"
   '.prompt_cache = {caching_observed: true, warm: true, ttl: "1h", expires_at: $exp, hit_ratio: 0.914, misses: 0, last_miss_cause: null, recache_tokens_if_cold: 45000}')"
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "42% 6k/200k │ cache 91% ⟳ in 52m │ repo (main)" "prompt cache sits right after the context on line 1"
-assert_contains "$PLAIN" "cache 91% ⟳ in 52m" "warm prompt cache shows hit ratio and time to cold"
+assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "42% 6k/200k │ cache 91% in 52m │ repo (main)" "prompt cache sits right after the context on line 1"
+assert_contains "$PLAIN" "cache 91% in 52m" "warm prompt cache shows hit ratio and time to cold"
 assert_contains "$OUTPUT" "$(printf '\033[38;2;125;205;160m91%%')" "a high hit ratio takes the ok color"
-assert_not_contains "$PLAIN" "✗" "prompt cache without misses shows no miss marker"
+assert_contains "$PLAIN" "cache 91% in 52m │" "prompt cache without misses shows no miss marker"
 
 new_case prompt-cache-cold
 COLD_INPUT="$(base_input | "$REAL_JQ" -c \
   '.prompt_cache = {caching_observed: true, warm: false, expires_at: null, hit_ratio: 0.42, misses: 2, last_miss_cause: {causes: ["tools_changed"], tools_added: 2, tools_removed: 0}, recache_tokens_if_cold: 45000}')"
 run_statusline "$COLD_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$PLAIN" "cache 42% cold 45k to re-cache ✗2 tools" "cold prompt cache shows rebuild cost and last miss cause"
+assert_contains "$PLAIN" "cache 42% cold 45k to re-cache x2 tools" "cold prompt cache shows rebuild cost and last miss cause"
 assert_contains "$OUTPUT" "$(printf '\033[38;2;240;160;110m42%%')" "a middling hit ratio takes the high color"
 
 new_case prompt-cache-expired
@@ -918,7 +918,7 @@ TEST_COLUMNS=60
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 EXPECTED_NARROW="$(printf '%s\n' \
-  "Claude Opus high │ 42% 6k/200k │ cache 91% ⟳52m" \
+  "Claude Opus high │ 42% 6k/200k │ cache 91% ~52m" \
   "repo (main)" \
   "" \
   "5h ═════ 11% │ 7d ═════ 22%")"
@@ -933,7 +933,7 @@ run_statusline "$WARM_INPUT"
 EXPECTED_TIGHT="$(printf '%s\n' \
   "Claude Opus high" \
   "42% 6k/200k" \
-  "cache 91% ⟳52m" \
+  "cache 91% ~52m" \
   "repo (main)" \
   "" \
   "5h ═════ 11%" \
@@ -955,9 +955,9 @@ TEST_COLUMNS=81
 run_statusline "$(compact_input /workspace/harness | "$REAL_JQ" -c --argjson exp "$((NOW + 59 * 60 + 30))" \
   '.prompt_cache = {caching_observed: true, warm: true, expires_at: $exp, hit_ratio: 0.64, misses: 0, recache_tokens_if_cold: 0}')"
 EXPECTED_COMPACT="$(printf '%s\n' \
-  "Opus 5.5 medium │ 5% 54k/1.0m │ cache 64% ⟳59m │ harness (main) │ ↗ \$87.25" \
+  "Opus 5.5 medium │ 5% 54k/1.0m │ cache 64% ~59m │ harness (main) │ +\$87.25" \
   "" \
-  "5h ═════ 95% ⟳1h38m │ 7d ═════ 76% ⟳1d19h │ Fable ═════ 16% ⟳1d19h")"
+  "5h ═════ 95% ~1h38m │ 7d ═════ 76% ~1d19h │ Fable ═════ 16% ~1d19h")"
 assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_COMPACT" "a split pane renders each line on one row in compact form"
 
 # The extra usage segment counts toward the dir cap decision.
@@ -966,20 +966,20 @@ write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
 FAKE_GIT_BRANCH=ci/cleanup-stale-ci-data
 TEST_COLUMNS=81
 run_statusline "$(compact_input /workspace/api-bruno)"
-assert_equal "$(strip_ansi "$OUTPUT" | head -n 1)" "Opus 5.5 medium │ 5% 54k/1.0m │ api-bruno (ci/cleanu…e-ci-data) │ ↗ \$87.25" \
+assert_equal "$(strip_ansi "$OUTPUT" | head -n 1)" "Opus 5.5 medium │ 5% 54k/1.0m │ api-bruno (ci/cleanu…e-ci-data) │ +\$87.25" \
   "tighter caps keep extra usage on line 1"
 
 new_case compact-cold-cache
 TEST_COLUMNS=99
 run_statusline "$COLD_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "│ cache 42% cold 45k ✗2 tools │" "a compact cold cache drops the re-cache words"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ cache 42% cold 45k x2 tools │" "a compact cold cache drops the re-cache words"
 
 new_case full-at-100-columns
 write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
 TEST_COLUMNS=100
 run_statusline "$(compact_input /workspace/harness)"
-assert_contains "$(strip_ansi "$OUTPUT")" "current ══════ 95% ⟳ in 1h 38m" "100 columns keep the full form"
-assert_contains "$(strip_ansi "$OUTPUT")" "↗ \$87.25 used · unlimited ⟳ $BILLING_RESET" \
+assert_contains "$(strip_ansi "$OUTPUT")" "current ══════ 95% in 1h 38m" "100 columns keep the full form"
+assert_contains "$(strip_ansi "$OUTPUT")" "extra \$87.25 used · unlimited resets $BILLING_RESET" \
   "an unlimited cap shows the billing reset in the full form"
 
 # Shorter dir/branch caps apply only where they keep the dir segment on the
@@ -1057,13 +1057,14 @@ for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25
 done
 assert_equal "$BAD_RENDERS" "0" "thirty fresh renders of a CJK line are all complete"
 
-# The double-width 🌳 counts as two cells: line 1 is 49 cells against 48
-# usable, so it wraps; counting 🌳 as one cell would keep it on one row.
+# The double-width 🌳 in the branch counts as two cells. Line 1 is 50 cells
+# against 49 usable, so it wraps. If the script counts 🌳 as one cell, line 1
+# stays on one row.
 new_case worktree-wide-glyph
-FAKE_GIT_BRANCH=gaotity/topic
-TEST_COLUMNS=52
+FAKE_GIT_BRANCH=gaotity/🌳topic
+TEST_COLUMNS=53
 run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic" | .workspace.git_worktree="topic"')"
-assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "project 🌳 topic")" \
+assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "project @ 🌳topic")" \
   "a worktree segment one cell too wide for the row wraps"
 
 new_case wide-columns
@@ -1090,9 +1091,9 @@ subagent_row() {
   strip_ansi "$(printf '%s\n' "$SUBAGENT_OUTPUT" | "$REAL_JQ" -r --arg id "$1" 'select(.id == $id) | .content')"
 }
 assert_equal "$(printf '%s\n' "$SUBAGENT_OUTPUT" | "$REAL_JQ" -r '.id' | tr '\n' ' ')" "a1 a2 a3 " "subagent statusline emits one row per task"
-assert_equal "$(subagent_row a1)" "reviewer  Review the auth diff  opus ◕ high  34k 17%" "subagent row shows model family and effort level"
+assert_equal "$(subagent_row a1)" "reviewer  Review the auth diff  opus high  34k 17%" "subagent row shows model family and effort level"
 assert_equal "$(subagent_row a2)" "scout  Find callers  1k 0%" "subagent row without model or effort keeps the old layout"
-assert_equal "$(subagent_row a3)" "budgeted  Summarize logs  sonnet ◑ 8k  500" "subagent row shortens provider IDs and humanizes a token budget"
+assert_equal "$(subagent_row a3)" "budgeted  Summarize logs  sonnet 8k  500" "subagent row shortens provider IDs and humanizes a token budget"
 
 # Narrow panels shed the badge, then the family, before the description floor.
 narrow_subagent_row() {
@@ -1100,13 +1101,13 @@ narrow_subagent_row() {
     | env -i PATH="$ORIGINAL_PATH" bash --noprofile --norc "$SUBAGENT_SOURCE" 2>/dev/null \
     | "$REAL_JQ" -r '.content' | sed $'s/\033\\[[0-9;]*m//g'
 }
-assert_equal "$(narrow_subagent_row 70)" "implementation-worker  Refactor…  sonnet ● xhigh  5k 2%" "a roomy row keeps model and effort"
+assert_equal "$(narrow_subagent_row 70)" "implementation-worker  Refactor t…  sonnet xhigh  5k 2%" "a roomy row keeps model and effort"
 assert_equal "$(narrow_subagent_row 64)" "implementation-worker  Refactor t…  sonnet  5k 2%" "a tighter row drops the effort badge first"
 assert_equal "$(narrow_subagent_row 40)" "implementation-worker  Refacto…  5k 2%" "the narrowest row drops model and effort"
 
 CJK_SUBAGENT_OUTPUT="$(printf '%s' '{"columns":50,"tasks":[{"id":"c","name":"审查员","description":"重构状态栏布局引擎并补充测试用例","tokenCount":1200,"contextWindowSize":200000,"model":"claude-opus-5-5","effort":"high"}]}' \
   | env -i PATH="$ORIGINAL_PATH" bash --noprofile --norc "$SUBAGENT_SOURCE" 2>/dev/null | "$REAL_JQ" -r '.content')"
-assert_equal "$(strip_ansi "$CJK_SUBAGENT_OUTPUT")" "审查员  重构状态栏布…  opus  1k 0%" \
+assert_equal "$(strip_ansi "$CJK_SUBAGENT_OUTPUT")" "审查员  重构状态…  opus high  1k 0%" \
   "CJK names and descriptions are budgeted in cells and cut between whole characters"
 
 # Both scripts carry the same cell-width helpers.

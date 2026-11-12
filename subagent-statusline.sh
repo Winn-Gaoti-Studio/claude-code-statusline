@@ -135,26 +135,27 @@ model_family() {
     _family=$_trunc
 }
 
-# Same glyphs and colors as the effort badge in statusline.sh; a numeric token
-# budget reads as a humanized count. Sets _badge and its width in _badge_len,
-# empty and 0 when the task inherits the session's effort.
+# Sets _badge to the effort label in the color of its level, and _badge_len to
+# its width. The badge has no symbol, because terminals show symbols at
+# different widths. A numeric token budget shows as a short count. If the task
+# uses the effort of the session, _badge is empty and _badge_len is 0.
 effort_badge() {
-    local label=$1 glyph="◑" color=$dim
+    local label=$1 color=$dim
     _badge=""
     _badge_len=0
     case "$1" in
         '')       return ;;
-        max)      glyph="●"; color=$red ;;
-        xhigh)    glyph="●"; color=$orange ;;
-        high)     glyph="◕"; color=$yellow ;;
+        max)      color=$red ;;
+        xhigh)    color=$orange ;;
+        high)     color=$yellow ;;
         medium)   color=$green ;;
-        low)      glyph="◔" ;;
+        low)      ;;
         *[!0-9]*) ;;
         *)        format_tokens "$1"; label=$_ft ;;
     esac
-    _badge="${color}${glyph} ${label}${reset}"
+    _badge="${color}${label}${reset}"
     cell_width "$label"
-    _badge_len=$(( 2 + _cw ))
+    _badge_len=$_cw
 }
 
 # Width of the "  family badge" segment for the current family/_badge_len.
