@@ -178,7 +178,15 @@ fi
 case "${1:-}" in
   rev-parse)
     [ "${FAKE_GIT_MODE:-none}" = "none" ] && exit 128
+    # Git before 2.31 rejects --path-format and can give a relative common dir.
     case "$*" in
+      *--path-format*) [ "${FAKE_GIT_OLD:-0}" = "1" ] && exit 129 ;;
+    esac
+    case "$*" in
+      "rev-parse --absolute-git-dir --git-common-dir --show-toplevel")
+        printf '%s\n%s\n%s\n' "${FAKE_GIT_DIR:-${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}}" \
+          "${FAKE_GIT_COMMON_DIR_REL:-${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}}" "$top"
+        ;;
       "rev-parse --absolute-git-dir --path-format=absolute --git-common-dir --show-toplevel")
         # A linked worktree has its own Git dir below the common Git dir.
         printf '%s\n%s\n%s\n' "${FAKE_GIT_DIR:-${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}}" \
@@ -244,6 +252,8 @@ new_case() {
   FAKE_GIT_BRANCH=main
   FAKE_GIT_COMMON_DIR=/workspace/project/.git
   FAKE_GIT_DIR=""
+  FAKE_GIT_OLD=0
+  FAKE_GIT_COMMON_DIR_REL=""
   FAKE_JJ_MODE=none
   FAKE_JJ_BOOKMARK=""
   FAKE_JJ_CHANGE=zrpz
@@ -282,6 +292,8 @@ run_statusline() {
     FAKE_JJ_CHANGE="${FAKE_JJ_CHANGE:-zrpz}" \
     FAKE_JJ_DIRTY="${FAKE_JJ_DIRTY:-0}" \
     ${FAKE_GIT_DIR:+FAKE_GIT_DIR="$FAKE_GIT_DIR"} \
+    FAKE_GIT_OLD="${FAKE_GIT_OLD:-0}" \
+    ${FAKE_GIT_COMMON_DIR_REL:+FAKE_GIT_COMMON_DIR_REL="$FAKE_GIT_COMMON_DIR_REL"} \
     FAKE_JJ_LOG="$FAKE_JJ_LOG" \
     FAKE_GIT_LOG="$FAKE_GIT_LOG" \
     FAKE_GIT_COMMON_DIR="${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}" \
@@ -459,6 +471,38 @@ mkdir -p "$CASE_DIR/repo/.jj/repo"
 FAKE_JJ_MODE=none
 run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
 assert_contains "$(strip_ansi "$OUTPUT")" "│ repo git:main" "a failed jj query falls back to Git"
+
+# A bare or --separate-git-dir common dir names the repository itself.
+new_case git-bare-worktree
+FAKE_GIT_COMMON_DIR=/srv/repos/my-app.git
+FAKE_GIT_DIR=/srv/repos/my-app.git/worktrees/topic
+run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic"')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ my-app wt:topic git:main" "a worktree of a bare repository shows the bare name without .git"
+
+new_case git-separate-dir-worktree
+FAKE_GIT_COMMON_DIR=/srv/git/project
+FAKE_GIT_DIR=/srv/git/project/worktrees/topic
+run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic"')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project wt:topic git:main" "a worktree of a separate Git dir shows the name of that dir"
+
+# Git before 2.31 has no --path-format: the probe resolves a relative common dir.
+new_case git-old-main-checkout
+mkdir -p "$CASE_DIR/repo/.git"
+FAKE_GIT_OLD=1
+FAKE_GIT_DIR="$CASE_DIR/repo/.git"
+FAKE_GIT_COMMON_DIR_REL=.git
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
+assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo git:main" \
+  "Git without --path-format still shows the branch of a main checkout"
+
+new_case git-old-worktree
+mkdir -p "$CASE_DIR/project/.git/worktrees/topic" "$CASE_DIR/topic"
+FAKE_GIT_OLD=1
+FAKE_GIT_DIR="$CASE_DIR/project/.git/worktrees/topic"
+FAKE_GIT_COMMON_DIR_REL=../project/.git
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic" '.cwd=$cwd')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project wt:topic git:main" \
+  "Git without --path-format resolves a relative common dir of a worktree"
 
 new_case detached-without-jj
 mkdir -p "$CASE_DIR/repo"

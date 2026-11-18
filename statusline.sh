@@ -531,14 +531,35 @@ probe_jj() {
     fi
 }
 
+repo_name_from_common_dir() {
+    # A common dir named .git is in the main checkout: use the checkout name.
+    # A bare or --separate-git-dir common dir has its own name, without .git.
+    local name
+    name=$(basename "$1")
+    if [ "$name" = ".git" ]; then
+        basename "$(dirname "$1")"
+    else
+        printf '%s' "${name%.git}"
+    fi
+}
+
 probe_git() {
     # Sets vcs=git and the branch (or the short commit ID when HEAD is
     # detached). A linked worktree has a Git dir that differs from the common
-    # Git dir; the common dir's parent is the main checkout.
+    # Git dir.
     local dirs git_dir common_dir top
-    dirs=$(git -C "$cwd" rev-parse --absolute-git-dir --path-format=absolute \
-        --git-common-dir --show-toplevel 2>/dev/null) || return 1
-    { IFS= read -r git_dir; IFS= read -r common_dir; IFS= read -r top; } <<< "$dirs"
+    if dirs=$(git -C "$cwd" rev-parse --absolute-git-dir --path-format=absolute \
+        --git-common-dir --show-toplevel 2>/dev/null); then
+        { IFS= read -r git_dir; IFS= read -r common_dir; IFS= read -r top; } <<< "$dirs"
+    else
+        # Git before 2.31 has no --path-format, and it can give a relative
+        # common dir. Resolve both dirs from cwd, so that they compare equal.
+        dirs=$(git -C "$cwd" rev-parse --absolute-git-dir --git-common-dir \
+            --show-toplevel 2>/dev/null) || return 1
+        { IFS= read -r git_dir; IFS= read -r common_dir; IFS= read -r top; } <<< "$dirs"
+        git_dir=$(cd "$cwd" 2>/dev/null && cd "$git_dir" 2>/dev/null && pwd -P) || return 1
+        common_dir=$(cd "$cwd" 2>/dev/null && cd "$common_dir" 2>/dev/null && pwd -P) || return 1
+    fi
     [ -n "$top" ] || return 1
     vcs=git
     vcs_ref=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
@@ -548,7 +569,7 @@ probe_git() {
         vcs_dirty="*"
     fi
     if [ "$git_dir" != "$common_dir" ]; then
-        main_repo=$(basename "$(dirname "$common_dir")")
+        main_repo=$(repo_name_from_common_dir "$common_dir")
         vcs_place=$(basename "$top")
     fi
 }
