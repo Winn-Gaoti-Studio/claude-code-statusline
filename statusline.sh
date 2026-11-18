@@ -20,11 +20,12 @@ fi
 
 # ── Colors ──────────────────────────────────────────────
 # One pastel family of similar lightness and saturation, used by every segment:
-# accents mark identity (model and directory blue, branch lavender), the
+# accents mark identity (model and directory blue, Git lavender, jj teal), the
 # ok → warn → high → crit scale marks state (context, cache, usage, bars), text
 # marks labels, and dim marks secondary detail.
 accent_rgb='130;170;255'
 accent2_rgb='195;165;255'
+jj_rgb='110;205;215'
 text_rgb='205;210;220'
 ok_rgb='125;205;160'
 warn_rgb='225;195;110'
@@ -33,6 +34,8 @@ crit_rgb='240;120;135'
 accent="\033[38;2;${accent_rgb}m"
 accent_bold="\033[1;38;2;${accent_rgb}m"
 accent2="\033[38;2;${accent2_rgb}m"
+git_color=$accent2
+jj_color="\033[38;2;${jj_rgb}m"
 text="\033[38;2;${text_rgb}m"
 ok="\033[38;2;${ok_rgb}m"
 warn="\033[38;2;${warn_rgb}m"
@@ -307,15 +310,16 @@ format_reset_time() {
 }
 
 read_git_cache() {
-    # Read the Git result for this directory from $git_cache_file. Set
-    # git_branch, git_dirty and main_repo only if the file is complete, has the
-    # key $git_cache_key, and is younger than the TTL. Any other state returns 1.
+    # Read the VCS result for this directory from $git_cache_file. Set the
+    # vcs_* fields and main_repo only if the file is complete, has the key
+    # $git_cache_key, and is younger than the TTL. Any other state returns 1.
     # Only a regular file is read: a read from a FIFO can block the render.
-    local key ts branch dirty repo end
+    local key ts kind ref mark dirty repo place end
     [ -f "$git_cache_file" ] && [ -r "$git_cache_file" ] || return 1
     {
-        IFS= read -r key && IFS= read -r ts && IFS= read -r branch &&
-            IFS= read -r dirty && IFS= read -r repo && IFS= read -r end
+        IFS= read -r key && IFS= read -r ts && IFS= read -r kind &&
+            IFS= read -r ref && IFS= read -r mark && IFS= read -r dirty &&
+            IFS= read -r repo && IFS= read -r place && IFS= read -r end
     } 2>/dev/null <"$git_cache_file" || return 1
     [ "$key" = "$git_cache_key" ] && [ "$end" = "end" ] || return 1
     case "$ts" in
@@ -323,9 +327,12 @@ read_git_cache() {
     esac
     [ "${#ts}" -le 12 ] || return 1
     [ "$(( now_epoch - ts ))" -ge 0 ] && [ "$(( now_epoch - ts ))" -lt "$git_ttl" ] || return 1
-    git_branch=$branch
-    git_dirty=$dirty
+    vcs=$kind
+    vcs_ref=$ref
+    vcs_mark=$mark
+    vcs_dirty=$dirty
     main_repo=$repo
+    vcs_place=$place
 }
 
 write_git_cache() {
@@ -336,8 +343,9 @@ write_git_cache() {
         tmp="$git_cache_file.$$"
         [ ! -d "$git_cache_file" ] || exit 1
         [ -d "$git_cache_dir" ] || mkdir -p "$git_cache_dir" || exit 1
-        printf '%s\n%s\n%s\n%s\n%s\nend\n' "$git_cache_key" "$now_epoch" \
-            "$git_branch" "$git_dirty" "$main_repo" >"$tmp" || { rm -f "$tmp"; exit 1; }
+        printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\nend\n' "$git_cache_key" "$now_epoch" \
+            "$vcs" "$vcs_ref" "$vcs_mark" "$vcs_dirty" "$main_repo" "$vcs_place" \
+            >"$tmp" || { rm -f "$tmp"; exit 1; }
         mv -f "$tmp" "$git_cache_file" || { rm -f "$tmp"; exit 1; }
     ) >/dev/null 2>&1 || true
 }
@@ -448,8 +456,14 @@ pct_color=$(color_for_pct "$pct_used")
 [ -z "$cwd" ] && cwd=$(pwd)
 dirname=$(basename "$cwd")
 
-git_branch=""
-git_dirty=""
+# vcs: jj, git or empty. vcs_ref: jj change ID or Git branch. vcs_mark: jj
+# bookmark. vcs_place: name of a jj secondary workspace or a Git linked
+# worktree, empty in the main checkout. main_repo: repository name there.
+vcs=""
+vcs_ref=""
+vcs_mark=""
+vcs_dirty=""
+vcs_place=""
 main_repo=""
 
 # Every refresh of every session runs this probe, and the status scan is costly
@@ -482,33 +496,65 @@ if [ "$git_ttl" -gt 0 ]; then
     esac
 fi
 
-if [ -z "$git_cache_file" ] || ! read_git_cache; then
-    if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-        # A jj workspace leaves Git HEAD detached, and a bookmark takes the place of
-        # the branch: show the newest bookmark on the working-copy commit or its
-        # parent. --ignore-working-copy and --at-op @ keep the query read-only (no
-        # snapshot, no new operation), so a render never changes the operation log.
-        if [ -z "$git_branch" ] && command -v jj >/dev/null 2>&1; then
-            git_branch=$(cd "$cwd" 2>/dev/null && jj --ignore-working-copy --at-op @ --no-pager --color never \
-                log --no-graph -r 'latest((@ | @-) & bookmarks())' \
-                -T 'local_bookmarks.map(|b| b.name()).join(" ")' 2>/dev/null)
-        fi
-        # Untracked files are not scanned: that scan costs most of the time.
-        if [ -n "$(git -C "$cwd" --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-            git_dirty="*"
-        fi
-        if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
-            common_git=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)
-            if [ -n "$common_git" ]; then
-                case "$common_git" in
-                    /*) ;;
-                    *) common_git="$cwd/$common_git" ;;
-                esac
-                main_repo=$(basename "$(dirname "$common_git")")
-            fi
-        fi
+probe_jj() {
+    # A directory with .jj at or above cwd is a jj workspace, also when Git is
+    # colocated. Sets vcs=jj, the change ID of @ and the newest bookmark on @ or
+    # @-. --ignore-working-copy and --at-op @ keep the query read-only (no
+    # snapshot, no new operation), so a render never changes the operation log;
+    # the dirty mark thus shows the last snapshot that another jj command took.
+    local d=$cwd root="" out repo_link
+    while [ -n "$d" ]; do
+        [ -d "$d/.jj" ] && { root=$d; break; }
+        [ "$d" = "/" ] && break
+        d=$(dirname "$d")
+    done
+    [ -n "$root" ] && command -v jj >/dev/null 2>&1 || return 1
+    out=$(cd "$cwd" 2>/dev/null && jj --ignore-working-copy --at-op @ --no-pager --color never \
+        log --no-graph -r @ -T 'change_id.shortest(4) ++ " " ++ if(empty, "-", "*")' 2>/dev/null)
+    [ -n "$out" ] || return 1
+    vcs=jj
+    vcs_ref=${out%% *}
+    [ "${out#* }" = "*" ] && vcs_dirty="*"
+    vcs_mark=$(cd "$cwd" 2>/dev/null && jj --ignore-working-copy --at-op @ --no-pager --color never \
+        log --no-graph -r 'latest((@ | @-) & bookmarks())' \
+        -T 'local_bookmarks.map(|b| b.name()).join(" ")' 2>/dev/null)
+    # A secondary workspace has a .jj/repo file that points to the main .jj/repo.
+    if [ -f "$root/.jj/repo" ]; then
+        repo_link=$(cat "$root/.jj/repo" 2>/dev/null)
+        case "$repo_link" in
+            /*) ;;
+            *) repo_link="$root/.jj/$repo_link" ;;
+        esac
+        # The link can be relative (../../.jj/repo): resolve it before basename.
+        main_repo=$(cd "$(dirname "$repo_link")/.." 2>/dev/null && basename "$PWD")
+        vcs_place=$(basename "$root")
     fi
+}
+
+probe_git() {
+    # Sets vcs=git and the branch (or the short commit ID when HEAD is
+    # detached). A linked worktree has a Git dir that differs from the common
+    # Git dir; the common dir's parent is the main checkout.
+    local dirs git_dir common_dir top
+    dirs=$(git -C "$cwd" rev-parse --absolute-git-dir --path-format=absolute \
+        --git-common-dir --show-toplevel 2>/dev/null) || return 1
+    { IFS= read -r git_dir; IFS= read -r common_dir; IFS= read -r top; } <<< "$dirs"
+    [ -n "$top" ] || return 1
+    vcs=git
+    vcs_ref=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
+    [ -z "$vcs_ref" ] && vcs_ref=$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
+    # Untracked files are not scanned: that scan costs most of the time.
+    if [ -n "$(git -C "$cwd" --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        vcs_dirty="*"
+    fi
+    if [ "$git_dir" != "$common_dir" ]; then
+        main_repo=$(basename "$(dirname "$common_dir")")
+        vcs_place=$(basename "$top")
+    fi
+}
+
+if [ -z "$git_cache_file" ] || ! read_git_cache; then
+    probe_jj || probe_git
     [ -n "$git_cache_file" ] && write_git_cache
 fi
 
@@ -523,29 +569,24 @@ model_segment="${accent_bold}${model_name}${reset} ${accent}${effort}"
 [ "$ultracode_enabled" = "true" ] && model_segment+=" ultracode"
 model_segment+="${reset}"
 context_segment="${pct_color}${pct_used}%${reset} ${dim}${used_tokens}/${total_tokens}${reset}"
-# Dir/branch segment. In worktree mode dirname == worktree slug (the basename
-# of .worktrees/<user>/<scope>) and the branch is <user>/<scope>, so the
-# slug would appear twice; we replace the dirname with the MAIN repo name
-# (derived from the worktree's common .git dir — its parent IS the main
-# checkout, so basename gives the repo name) and strip the implicit user/
-# prefix from the branch. Long names get middle-ellipsis truncation so the
-# head and tail (issue ID, last word) stay recognizable.
-if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
-    [ -z "$main_repo" ] && main_repo="$dirname"
-    display_branch="${git_branch#*/}"
-fi
-
+# Dir/VCS segment. Labels tell the four cases apart, and colors tell jj from
+# Git: "jj:" a jj change, "ws:" a jj secondary workspace (both jj color),
+# "git:" a Git branch, "wt:" a Git linked worktree (both Git color). In a
+# workspace or worktree the directory name is replaced by the main repository
+# name. Long names get middle-ellipsis truncation so the head and tail (issue
+# ID, last word) stay recognizable.
 build_dir_segment() {
-    # $1/$2: directory and branch caps. Sets _dir_segment.
-    local dir_cap=$1 branch_cap=$2
-    if [ -n "$git_worktree" ] && [ -n "$git_branch" ]; then
-        _dir_segment="${accent}$(truncate_middle "$main_repo" "$dir_cap")${reset} @ ${accent2}$(truncate_middle "$display_branch" "$branch_cap")${crit}${git_dirty}${reset}"
-    elif [ -n "$git_branch" ]; then
-        _dir_segment="${accent}$(truncate_middle "$dirname" "$dir_cap")${reset}"
-        _dir_segment+=" ${accent2}($(truncate_middle "$git_branch" "$branch_cap")${crit}${git_dirty}${accent2})${reset}"
-    else
-        _dir_segment="${accent}$(truncate_middle "$dirname" "$dir_cap")${reset}"
-    fi
+    # $1/$2: directory and ref caps. Sets _dir_segment.
+    local dir_cap=$1 ref_cap=$2 c ref_label place_label
+    _dir_segment="${accent}$(truncate_middle "${main_repo:-$dirname}" "$dir_cap")${reset}"
+    case "$vcs" in
+        jj)  c=$jj_color;  ref_label=jj;  place_label=ws ;;
+        git) c=$git_color; ref_label=git; place_label=wt ;;
+        *)   return ;;
+    esac
+    [ -n "$vcs_place" ] && _dir_segment+=" ${dim}${c}${place_label}:${reset}${c}$(truncate_middle "$vcs_place" "$dir_cap")${reset}"
+    [ -n "$vcs_ref" ] && _dir_segment+=" ${dim}${c}${ref_label}:${reset}${c}$(truncate_middle "$vcs_ref" "$ref_cap")${crit}${vcs_dirty}${reset}"
+    [ -n "$vcs_mark" ] && _dir_segment+=" ${c}[$(truncate_middle "$vcs_mark" "$ref_cap")]${reset}"
 }
 
 # Render a stable cache snapshot and ask the helper to refresh stale data in a
