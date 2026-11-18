@@ -22,13 +22,37 @@ prompt is never blocked by the Anthropic usage endpoint. The former context
 handoff for reminder hooks is retired; the current runtime does not write a
 context-usage file.
 
+## Layout
+
+Line 1 shows the model, the context, the directory, and the extra usage. Line 2
+starts with the prompt cache, and then shows the usage windows of the account.
+
+The directory segment uses labels to show four types of location:
+
+| Location | Example |
+| --- | --- |
+| Git branch | `repo git:main*` |
+| Git linked worktree | `repo wt:topic git:feature/topic` |
+| jj change | `repo jj:otln [main]` |
+| jj secondary workspace | `repo ws:topic jj:zrpz*` |
+
+- A directory with `.jj` at or above the session directory is a jj
+  repository, also when Git is colocated.
+- jj labels are teal, and Git labels are lavender.
+- In a worktree or a secondary workspace, `repo` is the name of the main
+  repository.
+- A jj segment shows the newest bookmark on `@` or `@-` in brackets.
+- If Git `HEAD` is detached, the Git segment shows the short commit ID.
+- The jj query does not record a snapshot of the working copy. Thus the jj
+  dirty mark shows the state at the last jj command.
+
 ## Git state cache
 
-The directory segment shows the branch and a dirty mark (`*`). Each render of
-each session needs this data, and a large repository makes the Git status scan
-slow. The script keeps the result for each working directory in the runtime
-directory, in a file named `statusline-git-<hash>`. It uses the file again for
-30 seconds.
+The directory segment shows the change or branch and a dirty mark (`*`). Each
+render of each session needs this data, and a large repository makes the Git
+status scan slow. The script keeps the result for each working directory in
+the runtime directory, in a file named `statusline-git-<hash>`. It uses the
+file again for 30 seconds.
 
 - `CLAUDE_STATUSLINE_GIT_TTL` sets the time in seconds. The value `0` turns the
   cache off. An invalid value gives the default of 30. A valid value has 1 to 9

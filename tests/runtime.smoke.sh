@@ -169,19 +169,31 @@ EOF
   cat > "$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${FAKE_GIT_LOG:-}" ] || printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+top=$PWD
 if [ "${1:-}" = "-C" ]; then
+  top=$2
   shift 2
 fi
 
 case "${1:-}" in
   rev-parse)
-    case "${2:-}" in
-      --is-inside-work-tree)
-        [ "${FAKE_GIT_MODE:-none}" = "none" ] && exit 1
-        printf 'true\n'
+    [ "${FAKE_GIT_MODE:-none}" = "none" ] && exit 128
+    # Git before 2.31 rejects --path-format and can give a relative common dir.
+    case "$*" in
+      *--path-format*) [ "${FAKE_GIT_OLD:-0}" = "1" ] && exit 129 ;;
+    esac
+    case "$*" in
+      "rev-parse --absolute-git-dir --git-common-dir --show-toplevel")
+        printf '%s\n%s\n%s\n' "${FAKE_GIT_DIR:-${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}}" \
+          "${FAKE_GIT_COMMON_DIR_REL:-${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}}" "$top"
         ;;
-      --git-common-dir)
-        printf '%s\n' "${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}"
+      "rev-parse --absolute-git-dir --path-format=absolute --git-common-dir --show-toplevel")
+        # A linked worktree has its own Git dir below the common Git dir.
+        printf '%s\n%s\n%s\n' "${FAKE_GIT_DIR:-${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}}" \
+          "${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}" "$top"
+        ;;
+      "rev-parse --short HEAD")
+        printf '%s\n' "${FAKE_GIT_SHA:-abc1234}"
         ;;
       *) exit 91 ;;
     esac
@@ -208,7 +220,17 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "$PWD $*" >> "$FAKE_JJ_LOG"
 [ "${FAKE_JJ_MODE:-none}" = "repo" ] || exit 1
-printf '%s' "${FAKE_JJ_BOOKMARK:-}"
+case "$*" in
+  *change_id*)
+    if [ "${FAKE_JJ_DIRTY:-0}" = "1" ]; then
+      printf '%s *' "${FAKE_JJ_CHANGE:-zrpz}"
+    else
+      printf '%s -' "${FAKE_JJ_CHANGE:-zrpz}"
+    fi
+    ;;
+  *bookmarks*) printf '%s' "${FAKE_JJ_BOOKMARK:-}" ;;
+  *) exit 91 ;;
+esac
 EOF
 
   chmod +x "$FAKE_BIN/jq" "$FAKE_BIN/security" "$FAKE_BIN/secret-tool" "$FAKE_BIN/curl" "$FAKE_BIN/git" "$FAKE_BIN/jj"
@@ -229,8 +251,13 @@ new_case() {
   FAKE_GIT_MODE=clean
   FAKE_GIT_BRANCH=main
   FAKE_GIT_COMMON_DIR=/workspace/project/.git
+  FAKE_GIT_DIR=""
+  FAKE_GIT_OLD=0
+  FAKE_GIT_COMMON_DIR_REL=""
   FAKE_JJ_MODE=none
   FAKE_JJ_BOOKMARK=""
+  FAKE_JJ_CHANGE=zrpz
+  FAKE_JJ_DIRTY=0
   FAKE_JJ_LOG="$CASE_DIR/jj.log"
   FAKE_GIT_LOG="$CASE_DIR/git.log"
   TEST_GIT_TTL=""
@@ -246,7 +273,7 @@ new_case() {
 }
 
 base_input() {
-  printf '%s' '{"model":{"display_name":"Claude Opus"},"context_window":{"context_window_size":200000,"used_percentage":42.9,"current_usage":{"input_tokens":1000,"cache_creation_input_tokens":2000,"cache_read_input_tokens":3000,"output_tokens":4000}},"cwd":"/workspace/repo","workspace":{"git_worktree":""},"effort":{"level":"high"},"session_id":"'"$SMOKE_SESSION"'"}'
+  printf '%s' '{"model":{"display_name":"Claude Opus"},"context_window":{"context_window_size":200000,"used_percentage":42.9,"current_usage":{"input_tokens":1000,"cache_creation_input_tokens":2000,"cache_read_input_tokens":3000,"output_tokens":4000}},"cwd":"/workspace/repo","workspace":{},"effort":{"level":"high"},"session_id":"'"$SMOKE_SESSION"'"}'
 }
 
 run_statusline() {
@@ -262,6 +289,11 @@ run_statusline() {
     FAKE_GIT_BRANCH="${FAKE_GIT_BRANCH-main}" \
     FAKE_JJ_MODE="${FAKE_JJ_MODE:-none}" \
     FAKE_JJ_BOOKMARK="${FAKE_JJ_BOOKMARK:-}" \
+    FAKE_JJ_CHANGE="${FAKE_JJ_CHANGE:-zrpz}" \
+    FAKE_JJ_DIRTY="${FAKE_JJ_DIRTY:-0}" \
+    ${FAKE_GIT_DIR:+FAKE_GIT_DIR="$FAKE_GIT_DIR"} \
+    FAKE_GIT_OLD="${FAKE_GIT_OLD:-0}" \
+    ${FAKE_GIT_COMMON_DIR_REL:+FAKE_GIT_COMMON_DIR_REL="$FAKE_GIT_COMMON_DIR_REL"} \
     FAKE_JJ_LOG="$FAKE_JJ_LOG" \
     FAKE_GIT_LOG="$FAKE_GIT_LOG" \
     FAKE_GIT_COMMON_DIR="${FAKE_GIT_COMMON_DIR:-/workspace/project/.git}" \
@@ -330,7 +362,7 @@ fi
 new_case clean-snapshot
 FAKE_GIT_MODE=clean
 run_statusline "$(base_input)"
-EXPECTED_CLEAN="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mrepo\033[0m \033[38;2;195;165;255m(main\033[38;2;240;120;135m\033[38;2;195;165;255m)\033[0m')"
+EXPECTED_CLEAN="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mrepo\033[0m \033[2m\033[38;2;195;165;255mgit:\033[0m\033[38;2;195;165;255mmain\033[38;2;240;120;135m\033[0m')"
 assert_status 0 "clean statusline exits successfully"
 assert_equal "$OUTPUT" "$EXPECTED_CLEAN" "clean ANSI snapshot is unchanged"
 assert_empty "$STDERR_OUTPUT" "clean statusline has no stderr"
@@ -338,47 +370,139 @@ assert_empty "$STDERR_OUTPUT" "clean statusline has no stderr"
 new_case dirty-snapshot
 FAKE_GIT_MODE=dirty
 run_statusline "$(base_input)"
-EXPECTED_DIRTY="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mrepo\033[0m \033[38;2;195;165;255m(main\033[38;2;240;120;135m*\033[38;2;195;165;255m)\033[0m')"
+EXPECTED_DIRTY="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mrepo\033[0m \033[2m\033[38;2;195;165;255mgit:\033[0m\033[38;2;195;165;255mmain\033[38;2;240;120;135m*\033[0m')"
 assert_equal "$OUTPUT" "$EXPECTED_DIRTY" "dirty repository restores the red asterisk"
 
 new_case worktree-snapshot
 FAKE_GIT_MODE=dirty
 FAKE_GIT_BRANCH=gaotity/long-topic
 FAKE_GIT_COMMON_DIR=/workspace/project/.git
-WORKTREE_INPUT="$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic-worktree" | .workspace.git_worktree="/workspace/project/.git/worktrees/topic-worktree"')"
+FAKE_GIT_DIR=/workspace/project/.git/worktrees/topic-worktree
+WORKTREE_INPUT="$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic-worktree"')"
 run_statusline "$WORKTREE_INPUT"
-EXPECTED_WORKTREE="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mproject\033[0m @ \033[38;2;195;165;255mlong-topic\033[38;2;240;120;135m*\033[0m')"
-assert_equal "$OUTPUT" "$EXPECTED_WORKTREE" "worktree ANSI snapshot is unchanged"
+EXPECTED_WORKTREE="$(printf '\033[1;38;2;130;170;255mClaude Opus\033[0m \033[38;2;130;170;255mhigh\033[0m \033[2m│\033[0m \033[38;2;125;205;160m42%%\033[0m \033[2m6k/200k\033[0m \033[2m│\033[0m \033[38;2;130;170;255mproject\033[0m \033[2m\033[38;2;195;165;255mwt:\033[0m\033[38;2;195;165;255mtopic-worktree\033[0m \033[2m\033[38;2;195;165;255mgit:\033[0m\033[38;2;195;165;255mgaotity/long-topic\033[38;2;240;120;135m*\033[0m')"
+assert_equal "$OUTPUT" "$EXPECTED_WORKTREE" "a Git linked worktree shows the main repository, wt: and git:"
 if [ ! -e "$FAKE_JJ_LOG" ]; then
-  pass "a checked-out Git branch does not run jj"
+  pass "a directory without .jj does not run jj"
 else
-  fail "a checked-out Git branch does not run jj"
+  fail "a directory without .jj does not run jj"
 fi
 
-# A jj workspace leaves Git HEAD detached; the bookmark takes the place of the branch.
+# A directory with .jj at or above cwd is a jj repository, also when Git is
+# colocated: it shows the change ID of @, the dirty mark and the bookmark.
 new_case jj-bookmark
-mkdir -p "$CASE_DIR/repo"
+mkdir -p "$CASE_DIR/repo/.jj/repo" "$CASE_DIR/repo/sub"
 FAKE_GIT_MODE=dirty
 FAKE_GIT_BRANCH=""
 FAKE_JJ_MODE=repo
+FAKE_JJ_DIRTY=1
 FAKE_JJ_BOOKMARK=topic
 run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
 assert_status 0 "a jj workspace statusline exits successfully"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (topic*)" "a jj workspace shows its bookmark and dirty state"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ repo jj:zrpz* [topic]" "a jj workspace shows its change, dirty state and bookmark"
+assert_contains "$OUTPUT" "$(printf '\033[2m\033[38;2;110;205;215mjj:\033[0m\033[38;2;110;205;215mzrpz')" \
+  "a jj change takes the jj color with a dim label"
+if [ ! -e "$FAKE_GIT_LOG" ]; then
+  pass "a jj workspace does not run Git"
+else
+  fail "a jj workspace does not run Git"
+fi
 JJ_CALL="$(cat "$FAKE_JJ_LOG" 2>/dev/null)"
 assert_contains "$JJ_CALL" "$CASE_DIR/repo " "jj runs in the session directory"
 assert_contains "$JJ_CALL" "--ignore-working-copy" "the jj query does not snapshot the working copy"
 assert_contains "$JJ_CALL" "--at-op @" "the jj query does not merge or write operations"
 assert_empty "$STDERR_OUTPUT" "a jj workspace statusline has no stderr"
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo/sub" '.cwd=$cwd')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ sub jj:zrpz* [topic]" "a subdirectory of a jj workspace finds .jj above it"
 
-new_case jj-worktree
-mkdir -p "$CASE_DIR/topic-worktree"
-FAKE_GIT_MODE=clean
-FAKE_GIT_BRANCH=""
+new_case jj-no-bookmark
+mkdir -p "$CASE_DIR/repo/.jj/repo"
+FAKE_JJ_MODE=repo
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
+assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo jj:zrpz" \
+  "a clean jj change without a bookmark shows only the change"
+
+# A secondary workspace has a .jj/repo file that points to the main .jj/repo.
+new_case jj-secondary-workspace
+mkdir -p "$CASE_DIR/project/.jj/repo" "$CASE_DIR/topic-worktree/.jj"
+printf '%s' "$CASE_DIR/project/.jj/repo" > "$CASE_DIR/topic-worktree/.jj/repo"
 FAKE_JJ_MODE=repo
 FAKE_JJ_BOOKMARK=topic
-run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic-worktree" '.cwd=$cwd | .workspace.git_worktree="topic-worktree"')"
-assert_contains "$(strip_ansi "$OUTPUT")" "project @ topic" "a jj worktree shows the main repository and its bookmark"
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic-worktree" '.cwd=$cwd')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project ws:topic-worktree jj:zrpz [topic]" \
+  "a jj secondary workspace shows the main repository and ws:"
+
+# The cache keeps the jj fields: a render inside the TTL starts no jj process.
+jj_calls() {
+  if [ -f "$FAKE_JJ_LOG" ]; then
+    wc -l < "$FAKE_JJ_LOG" | tr -d ' '
+  else
+    printf '0'
+  fi
+}
+new_case jj-cache-hit
+mkdir -p "$CASE_DIR/project/.jj/repo" "$CASE_DIR/topic-worktree/.jj"
+printf '%s' "$CASE_DIR/project/.jj/repo" > "$CASE_DIR/topic-worktree/.jj/repo"
+FAKE_JJ_MODE=repo
+FAKE_JJ_DIRTY=1
+FAKE_JJ_BOOKMARK=topic
+JJ_INPUT="$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic-worktree" '.cwd=$cwd')"
+run_statusline "$JJ_INPUT"
+FIRST_OUTPUT="$OUTPUT"
+FIRST_JJ_CALLS="$(jj_calls)"
+FAKE_JJ_CHANGE=other
+FAKE_JJ_BOOKMARK=changed
+run_statusline "$JJ_INPUT"
+assert_equal "$(jj_calls)" "$FIRST_JJ_CALLS" "a jj render inside the TTL starts no jj process"
+assert_equal "$OUTPUT" "$FIRST_OUTPUT" "a jj render inside the TTL shows the cached workspace, change and bookmark"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project ws:topic-worktree jj:zrpz* [topic]" "the jj cache keeps every field"
+
+new_case jj-relative-workspace
+mkdir -p "$CASE_DIR/project/.jj/repo" "$CASE_DIR/topic/.jj"
+printf '%s' "../../project/.jj/repo" > "$CASE_DIR/topic/.jj/repo"
+FAKE_JJ_MODE=repo
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic" '.cwd=$cwd')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project ws:topic jj:zrpz" \
+  "a relative .jj/repo link resolves to the main repository"
+
+# When the jj query gives nothing, the Git probe runs.
+new_case jj-fails-falls-back
+mkdir -p "$CASE_DIR/repo/.jj/repo"
+FAKE_JJ_MODE=none
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ repo git:main" "a failed jj query falls back to Git"
+
+# A bare or --separate-git-dir common dir names the repository itself.
+new_case git-bare-worktree
+FAKE_GIT_COMMON_DIR=/srv/repos/my-app.git
+FAKE_GIT_DIR=/srv/repos/my-app.git/worktrees/topic
+run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic"')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ my-app wt:topic git:main" "a worktree of a bare repository shows the bare name without .git"
+
+new_case git-separate-dir-worktree
+FAKE_GIT_COMMON_DIR=/srv/git/project
+FAKE_GIT_DIR=/srv/git/project/worktrees/topic
+run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic"')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project wt:topic git:main" "a worktree of a separate Git dir shows the name of that dir"
+
+# Git before 2.31 has no --path-format: the probe resolves a relative common dir.
+new_case git-old-main-checkout
+mkdir -p "$CASE_DIR/repo/.git"
+FAKE_GIT_OLD=1
+FAKE_GIT_DIR="$CASE_DIR/repo/.git"
+FAKE_GIT_COMMON_DIR_REL=.git
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
+assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo git:main" \
+  "Git without --path-format still shows the branch of a main checkout"
+
+new_case git-old-worktree
+mkdir -p "$CASE_DIR/project/.git/worktrees/topic" "$CASE_DIR/topic"
+FAKE_GIT_OLD=1
+FAKE_GIT_DIR="$CASE_DIR/project/.git/worktrees/topic"
+FAKE_GIT_COMMON_DIR_REL=../project/.git
+run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/topic" '.cwd=$cwd')"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ project wt:topic git:main" \
+  "Git without --path-format resolves a relative common dir of a worktree"
 
 new_case detached-without-jj
 mkdir -p "$CASE_DIR/repo"
@@ -386,7 +510,7 @@ FAKE_GIT_BRANCH=""
 FAKE_JJ_MODE=none
 run_statusline "$(base_input | "$REAL_JQ" -c --arg cwd "$CASE_DIR/repo" '.cwd=$cwd')"
 assert_status 0 "a detached Git HEAD outside jj exits successfully"
-assert_not_contains "$(strip_ansi "$OUTPUT")" "(" "a detached Git HEAD outside jj shows no branch"
+assert_contains "$(strip_ansi "$OUTPUT")" "│ repo git:abc1234" "a detached Git HEAD outside jj shows the short commit ID"
 assert_empty "$STDERR_OUTPUT" "a detached Git HEAD outside jj has no stderr"
 
 # The Git result is cached per directory, so a render inside the TTL starts no Git process.
@@ -430,7 +554,7 @@ assert_empty "$STDERR_OUTPUT" "a cached render has no stderr"
 
 # A different directory is a different cache entry.
 run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/other"')"
-assert_contains "$(strip_ansi "$OUTPUT")" "other (changed*)" "a new directory does not reuse the cache of another directory"
+assert_contains "$(strip_ansi "$OUTPUT")" "other git:changed*" "a new directory does not reuse the cache of another directory"
 assert_equal "$(git_calls)" "$((FIRST_CALLS + 3))" "a new directory probes Git again"
 
 # An old cache file is ignored and replaced.
@@ -441,7 +565,7 @@ age_git_cache "$(git_cache_file)"
 FAKE_GIT_BRANCH=changed
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a render after the TTL probes Git again"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "a render after the TTL shows the live branch"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:changed" "a render after the TTL shows the live branch"
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "the live result replaces the old cache file"
 
@@ -452,7 +576,7 @@ FIRST_CALLS="$(git_calls)"
 FAKE_GIT_BRANCH=changed
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a TTL of 0 probes Git on every render"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "a TTL of 0 shows the live branch"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:changed" "a TTL of 0 shows the live branch"
 if [ -z "$(git_cache_file)" ]; then
   pass "a TTL of 0 writes no Git cache file"
 else
@@ -484,7 +608,7 @@ FAKE_GIT_BRANCH=beta
 TEST_GIT_DIR=/workspace/beta.git
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a session with GIT_DIR probes Git on every render"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (beta)" "a session with GIT_DIR shows the live branch"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:beta" "a session with GIT_DIR shows the live branch"
 if [ -z "$(git_cache_file)" ]; then
   pass "a session with GIT_DIR writes no Git cache file"
 else
@@ -510,7 +634,7 @@ if [ "$FIFO_ELAPSED" -lt 4 ]; then
 else
   fail "a FIFO in place of the Git cache does not block the render"
 fi
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (fifo)" "a FIFO in place of the Git cache falls back to the live probe"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:fifo" "a FIFO in place of the Git cache falls back to the live probe"
 
 new_case git-cache-corrupt
 run_statusline "$(base_input)"
@@ -520,18 +644,18 @@ printf 'garbage\n' > "$CACHE_FILE"
 FAKE_GIT_BRANCH=changed
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "a corrupt Git cache falls back to the live probe"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "a corrupt Git cache shows the live branch"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:changed" "a corrupt Git cache shows the live branch"
 assert_empty "$STDERR_OUTPUT" "a corrupt Git cache is silent"
-head -n 5 "$CACHE_FILE" > "$CACHE_FILE.short" && mv -f "$CACHE_FILE.short" "$CACHE_FILE"
+head -n 8 "$CACHE_FILE" > "$CACHE_FILE.short" && mv -f "$CACHE_FILE.short" "$CACHE_FILE"
 FAKE_GIT_BRANCH=truncated
 run_statusline "$(base_input)"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (truncated)" "a truncated Git cache falls back to the live probe"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:truncated" "a truncated Git cache falls back to the live probe"
 rm -f "$CACHE_FILE"
 mkdir "$CACHE_FILE"
 FAKE_GIT_BRANCH=directory
 run_statusline "$(base_input)"
 assert_status 0 "a directory in place of the Git cache keeps the statusline successful"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (directory)" "a directory in place of the Git cache falls back to the live probe"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:directory" "a directory in place of the Git cache falls back to the live probe"
 assert_empty "$STDERR_OUTPUT" "a directory in place of the Git cache is silent"
 
 new_case git-cache-unwritable
@@ -541,7 +665,7 @@ FIRST_CALLS="$(git_calls)"
 FAKE_GIT_BRANCH=changed
 run_statusline "$(base_input)"
 assert_equal "$(git_calls)" "$((FIRST_CALLS * 2))" "an unwritable runtime directory probes Git on every render"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (changed)" "an unwritable runtime directory shows the live branch"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:changed" "an unwritable runtime directory shows the live branch"
 assert_empty "$STDERR_OUTPUT" "an unwritable runtime directory is silent"
 
 # The dirty mark ignores untracked files and follows changes to tracked files.
@@ -557,23 +681,23 @@ real_git -C "$REPO_DIR" add tracked
 real_git -C "$REPO_DIR" -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false commit -q -m init
 REPO_INPUT="$(base_input | "$REAL_JQ" -c --arg cwd "$REPO_DIR" '.cwd=$cwd')"
 run_statusline "$REPO_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (main)" "a clean repository shows no dirty mark"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:main" "a clean repository shows no dirty mark"
 printf 'new\n' > "$REPO_DIR/untracked"
 run_statusline "$REPO_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (main)" "an untracked file alone shows no dirty mark"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:main" "an untracked file alone shows no dirty mark"
 printf 'two\n' > "$REPO_DIR/tracked"
 run_statusline "$REPO_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (main*)" "a modified tracked file shows the dirty mark"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:main*" "a modified tracked file shows the dirty mark"
 real_git -C "$REPO_DIR" checkout -q -- tracked
 run_statusline "$REPO_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (main)" "a restored tracked file clears the dirty mark"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:main" "a restored tracked file clears the dirty mark"
 real_git -C "$REPO_DIR" add untracked
 run_statusline "$REPO_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (main*)" "a staged new file shows the dirty mark"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:main*" "a staged new file shows the dirty mark"
 real_git -C "$REPO_DIR" reset -q
 rm -f "$REPO_DIR/tracked"
 run_statusline "$REPO_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "repo (main*)" "a deleted tracked file shows the dirty mark"
+assert_contains "$(strip_ansi "$OUTPUT")" "repo git:main*" "a deleted tracked file shows the dirty mark"
 
 # Fresh usage renders immediately without an API refresh.
 new_case fresh-cache
@@ -864,10 +988,11 @@ WARM_INPUT="$(base_input | "$REAL_JQ" -c --argjson exp "$((NOW + 52 * 60 + 30))"
   '.prompt_cache = {caching_observed: true, warm: true, ttl: "1h", expires_at: $exp, hit_ratio: 0.914, misses: 0, last_miss_cause: null, recache_tokens_if_cold: 45000}')"
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "42% 6k/200k │ cache 91% in 52m │ repo (main)" "prompt cache sits right after the context on line 1"
+assert_equal "$(printf '%s\n' "$PLAIN" | head -n 1)" "Claude Opus high │ 42% 6k/200k │ repo git:main" "prompt cache is not on line 1"
+assert_equal "$(printf '%s\n' "$PLAIN" | tail -n 1)" "cache 91% in 52m" "prompt cache opens line 2"
 assert_contains "$PLAIN" "cache 91% in 52m" "warm prompt cache shows hit ratio and time to cold"
 assert_contains "$OUTPUT" "$(printf '\033[38;2;125;205;160m91%%')" "a high hit ratio takes the ok color"
-assert_contains "$PLAIN" "cache 91% in 52m │" "prompt cache without misses shows no miss marker"
+assert_not_contains "$PLAIN" "cache 91% in 52m x" "prompt cache without misses shows no miss marker"
 
 new_case prompt-cache-cold
 COLD_INPUT="$(base_input | "$REAL_JQ" -c \
@@ -918,10 +1043,9 @@ TEST_COLUMNS=60
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 EXPECTED_NARROW="$(printf '%s\n' \
-  "Claude Opus high │ 42% 6k/200k │ cache 91% ~52m" \
-  "repo (main)" \
+  "Claude Opus high │ 42% 6k/200k │ repo git:main" \
   "" \
-  "5h ═════ 11% │ 7d ═════ 22%")"
+  "cache 91% ~52m │ 5h ═════ 11% │ 7d ═════ 22%")"
 assert_equal "$PLAIN" "$EXPECTED_NARROW" "narrow terminal shortens bars and wraps only the segment that overflows"
 
 # At 29 columns (25 usable) the two 12-cell usage segments fit only without
@@ -933,9 +1057,9 @@ run_statusline "$WARM_INPUT"
 EXPECTED_TIGHT="$(printf '%s\n' \
   "Claude Opus high" \
   "42% 6k/200k" \
-  "cache 91% ~52m" \
-  "repo (main)" \
+  "repo git:main" \
   "" \
+  "cache 91% ~52m" \
   "5h ═════ 11%" \
   "7d ═════ 22%")"
 assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_TIGHT" "separator width decides the wrap point"
@@ -955,9 +1079,10 @@ TEST_COLUMNS=81
 run_statusline "$(compact_input /workspace/harness | "$REAL_JQ" -c --argjson exp "$((NOW + 59 * 60 + 30))" \
   '.prompt_cache = {caching_observed: true, warm: true, expires_at: $exp, hit_ratio: 0.64, misses: 0, recache_tokens_if_cold: 0}')"
 EXPECTED_COMPACT="$(printf '%s\n' \
-  "Opus 5.5 medium │ 5% 54k/1.0m │ cache 64% ~59m │ harness (main) │ +\$87.25" \
+  "Opus 5.5 medium │ 5% 54k/1.0m │ harness git:main │ +\$87.25" \
   "" \
-  "5h ═════ 95% ~1h38m │ 7d ═════ 76% ~1d19h │ Fable ═════ 16% ~1d19h")"
+  "cache 64% ~59m │ 5h ═════ 95% ~1h38m │ 7d ═════ 76% ~1d19h" \
+  "Fable ═════ 16% ~1d19h")"
 assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_COMPACT" "a split pane renders each line on one row in compact form"
 
 # The extra usage segment counts toward the dir cap decision.
@@ -966,13 +1091,13 @@ write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
 FAKE_GIT_BRANCH=ci/cleanup-stale-ci-data
 TEST_COLUMNS=81
 run_statusline "$(compact_input /workspace/api-bruno)"
-assert_equal "$(strip_ansi "$OUTPUT" | head -n 1)" "Opus 5.5 medium │ 5% 54k/1.0m │ api-bruno (ci/cleanu…e-ci-data) │ +\$87.25" \
+assert_equal "$(strip_ansi "$OUTPUT" | head -n 1)" "Opus 5.5 medium │ 5% 54k/1.0m │ api-bruno git:ci/cleanu…e-ci-data │ +\$87.25" \
   "tighter caps keep extra usage on line 1"
 
 new_case compact-cold-cache
 TEST_COLUMNS=99
 run_statusline "$COLD_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "│ cache 42% cold 45k x2 tools │" "a compact cold cache drops the re-cache words"
+assert_equal "$(strip_ansi "$OUTPUT" | tail -n 1)" "cache 42% cold 45k x2 tools" "a compact cold cache drops the re-cache words"
 
 new_case full-at-100-columns
 write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
@@ -983,43 +1108,43 @@ assert_contains "$(strip_ansi "$OUTPUT")" "extra \$87.25 used · unlimited reset
   "an unlimited cap shows the billing reset in the full form"
 
 # Shorter dir/branch caps apply only where they keep the dir segment on the
-# model/context/cache row, or where the full-cap segment overflows a row of its own.
+# model/context row, or where the full-cap segment overflows a row of its own.
 LONG_BRANCH="feature/very-long-branch-name-for-testing-caps"
 new_case line1-full-caps
 FAKE_GIT_BRANCH="$LONG_BRANCH"
 TEST_COLUMNS=104
 run_statusline "$(base_input)"
-assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo (feature/very-…-testing-caps)" \
+assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo git:feature/very-…-testing-caps" \
   "a line 1 that fits keeps the full-width caps"
 
 new_case line1-refit-fits
 FAKE_GIT_BRANCH="$LONG_BRANCH"
 TEST_COLUMNS=70
 run_statusline "$(base_input)"
-assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo (feature/v…ting-caps)" \
+assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo git:feature/v…ting-caps" \
   "tighter caps keep line 1 on one row when that makes it fit"
 
-# The prompt cache segment shares line 1, so it counts toward the cap decision:
-# at 82 columns (78 usable) only the tighter caps fit beside it.
+# The prompt cache segment is on line 2, so it does not count toward the line 1
+# cap decision: at 82 columns (78 usable) the full caps fit.
 new_case line1-refit-with-cache
 FAKE_GIT_BRANCH="$LONG_BRANCH"
 TEST_COLUMNS=82
 run_statusline "$(base_input | "$REAL_JQ" -c '.prompt_cache = {caching_observed: true, warm: false, expires_at: null, hit_ratio: 0.42, misses: 0, recache_tokens_if_cold: 0}')"
-assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ cache 42% cold │ repo (feature/v…ting-caps)" \
-  "the cache segment counts toward the line 1 cap decision"
+assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k │ repo git:feature/very-…-testing-caps" "" "cache 42% cold")" \
+  "the cache segment does not count toward the line 1 cap decision"
 
 new_case line1-wrap-keeps-caps
 FAKE_GIT_BRANCH="$LONG_BRANCH"
 TEST_COLUMNS=50
 run_statusline "$(base_input)"
-assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "repo (feature/very-…-testing-caps)")" \
+assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "repo git:feature/very-…-testing-caps")" \
   "a dir segment that wraps anyway keeps its full caps"
 
 new_case line1-dir-too-wide
 FAKE_GIT_BRANCH="$LONG_BRANCH"
 TEST_COLUMNS=36
 run_statusline "$(base_input)"
-assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "repo (feature/v…ting-caps)")" \
+assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "repo git:feature/v…ting-caps")" \
   "a full-cap dir segment wider than a whole row takes the tighter caps"
 
 # Fullwidth punctuation is two cells: 报告（终稿） is 12 cells, so line 1 is 45
@@ -1041,7 +1166,7 @@ assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42
 new_case cjk-branch-truncation
 FAKE_GIT_BRANCH="功能/超长的中文分支名称用于测试截断效果"
 run_statusline "$(base_input)"
-assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo (功能/超长的中…测试截断效果)" \
+assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo git:功能/超长的中…测试截断效果" \
   "a CJK branch is capped at 28 cells on character boundaries"
 
 # Every render is complete: switching the locale per call inside $(...) made
@@ -1057,14 +1182,15 @@ for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25
 done
 assert_equal "$BAD_RENDERS" "0" "thirty fresh renders of a CJK line are all complete"
 
-# The double-width 🌳 in the branch counts as two cells. Line 1 is 50 cells
-# against 49 usable, so it wraps. If the script counts 🌳 as one cell, line 1
+# The double-width 🌳 in the branch counts as two cells. Line 1 is 69 cells
+# against 68 usable, so it wraps. If the script counts 🌳 as one cell, line 1
 # stays on one row.
 new_case worktree-wide-glyph
 FAKE_GIT_BRANCH=gaotity/🌳topic
-TEST_COLUMNS=53
-run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic" | .workspace.git_worktree="topic"')"
-assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "project @ 🌳topic")" \
+FAKE_GIT_DIR=/workspace/project/.git/worktrees/topic
+TEST_COLUMNS=72
+run_statusline "$(base_input | "$REAL_JQ" -c '.cwd="/workspace/topic"')"
+assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k" "project wt:topic git:gaotity/🌳topic")" \
   "a worktree segment one cell too wide for the row wraps"
 
 new_case wide-columns
@@ -1074,7 +1200,7 @@ run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 assert_contains "$PLAIN" "current ══════ 11%" "wide terminal keeps full-width usage bars"
 assert_equal "$(printf '%s\n' "$PLAIN" | wc -l | tr -d ' ')" "3" "wide terminal keeps line 2 on one row"
-assert_contains "$PLAIN" "│ cache 91%" "wide terminal joins the cache segment with a separator"
+assert_contains "$PLAIN" "cache 91% in 52m │ current" "wide terminal joins the cache segment to the usage windows with a separator"
 
 # Subagent rows gain the model family and a non-inherited effort badge.
 new_case subagent-rows
