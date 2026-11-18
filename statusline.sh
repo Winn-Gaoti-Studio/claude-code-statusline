@@ -741,7 +741,7 @@ if [ "$max_width" -gt 0 ]; then
     line1_len=$_vlen
     visible_len "$context_segment"
     line1_len=$(( line1_len + 3 + _vlen ))
-    for seg in "$cache_segment" "$extra_segment"; do
+    for seg in "$extra_segment"; do
         [ -z "$seg" ] && continue
         visible_len "$seg"
         line1_len=$(( line1_len + 3 + _vlen ))
@@ -760,18 +760,20 @@ fi
 dir_segment="$_dir_segment"
 
 # ── Output ──────────────────────────────────────────────
-# The prompt cache describes this session like the context does, so it sits beside
-# the context on line 1; line 2 keeps only the account-wide usage windows.
+# The prompt cache opens line 2, before the account-wide usage windows, so
+# line 1 stays short.
 line1_segments=("$model_segment" "$context_segment")
-[ -n "$cache_segment" ] && line1_segments+=("$cache_segment")
 line1_segments+=("$dir_segment")
 [ -n "$extra_segment" ] && line1_segments+=("$extra_segment")
 layout_segments "${line1_segments[@]}"
 line1="$_layout"
 
+line2_segments=()
+[ -n "$cache_segment" ] && line2_segments+=("$cache_segment")
+line2_segments+=("${rate_segments[@]}")
 line2=""
-if [ "${#rate_segments[@]}" -gt 0 ]; then
-    layout_segments "${rate_segments[@]}"
+if [ "${#line2_segments[@]}" -gt 0 ]; then
+    layout_segments "${line2_segments[@]}"
     line2="$_layout"
 fi
 

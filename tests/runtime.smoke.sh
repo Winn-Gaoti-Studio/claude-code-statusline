@@ -864,10 +864,11 @@ WARM_INPUT="$(base_input | "$REAL_JQ" -c --argjson exp "$((NOW + 52 * 60 + 30))"
   '.prompt_cache = {caching_observed: true, warm: true, ttl: "1h", expires_at: $exp, hit_ratio: 0.914, misses: 0, last_miss_cause: null, recache_tokens_if_cold: 45000}')"
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
-assert_contains "$(printf '%s\n' "$PLAIN" | head -n 1)" "42% 6k/200k │ cache 91% in 52m │ repo (main)" "prompt cache sits right after the context on line 1"
+assert_equal "$(printf '%s\n' "$PLAIN" | head -n 1)" "Claude Opus high │ 42% 6k/200k │ repo (main)" "prompt cache is not on line 1"
+assert_equal "$(printf '%s\n' "$PLAIN" | tail -n 1)" "cache 91% in 52m" "prompt cache opens line 2"
 assert_contains "$PLAIN" "cache 91% in 52m" "warm prompt cache shows hit ratio and time to cold"
 assert_contains "$OUTPUT" "$(printf '\033[38;2;125;205;160m91%%')" "a high hit ratio takes the ok color"
-assert_contains "$PLAIN" "cache 91% in 52m │" "prompt cache without misses shows no miss marker"
+assert_not_contains "$PLAIN" "cache 91% in 52m x" "prompt cache without misses shows no miss marker"
 
 new_case prompt-cache-cold
 COLD_INPUT="$(base_input | "$REAL_JQ" -c \
@@ -918,10 +919,9 @@ TEST_COLUMNS=60
 run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 EXPECTED_NARROW="$(printf '%s\n' \
-  "Claude Opus high │ 42% 6k/200k │ cache 91% ~52m" \
-  "repo (main)" \
+  "Claude Opus high │ 42% 6k/200k │ repo (main)" \
   "" \
-  "5h ═════ 11% │ 7d ═════ 22%")"
+  "cache 91% ~52m │ 5h ═════ 11% │ 7d ═════ 22%")"
 assert_equal "$PLAIN" "$EXPECTED_NARROW" "narrow terminal shortens bars and wraps only the segment that overflows"
 
 # At 29 columns (25 usable) the two 12-cell usage segments fit only without
@@ -932,10 +932,9 @@ TEST_COLUMNS=29
 run_statusline "$WARM_INPUT"
 EXPECTED_TIGHT="$(printf '%s\n' \
   "Claude Opus high" \
-  "42% 6k/200k" \
-  "cache 91% ~52m" \
-  "repo (main)" \
+  "42% 6k/200k │ repo (main)" \
   "" \
+  "cache 91% ~52m" \
   "5h ═════ 11%" \
   "7d ═════ 22%")"
 assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_TIGHT" "separator width decides the wrap point"
@@ -955,9 +954,10 @@ TEST_COLUMNS=81
 run_statusline "$(compact_input /workspace/harness | "$REAL_JQ" -c --argjson exp "$((NOW + 59 * 60 + 30))" \
   '.prompt_cache = {caching_observed: true, warm: true, expires_at: $exp, hit_ratio: 0.64, misses: 0, recache_tokens_if_cold: 0}')"
 EXPECTED_COMPACT="$(printf '%s\n' \
-  "Opus 5.5 medium │ 5% 54k/1.0m │ cache 64% ~59m │ harness (main) │ +\$87.25" \
+  "Opus 5.5 medium │ 5% 54k/1.0m │ harness (main) │ +\$87.25" \
   "" \
-  "5h ═════ 95% ~1h38m │ 7d ═════ 76% ~1d19h │ Fable ═════ 16% ~1d19h")"
+  "cache 64% ~59m │ 5h ═════ 95% ~1h38m │ 7d ═════ 76% ~1d19h" \
+  "Fable ═════ 16% ~1d19h")"
 assert_equal "$(strip_ansi "$OUTPUT")" "$EXPECTED_COMPACT" "a split pane renders each line on one row in compact form"
 
 # The extra usage segment counts toward the dir cap decision.
@@ -972,7 +972,7 @@ assert_equal "$(strip_ansi "$OUTPUT" | head -n 1)" "Opus 5.5 medium │ 5% 54k/1
 new_case compact-cold-cache
 TEST_COLUMNS=99
 run_statusline "$COLD_INPUT"
-assert_contains "$(strip_ansi "$OUTPUT")" "│ cache 42% cold 45k x2 tools │" "a compact cold cache drops the re-cache words"
+assert_equal "$(strip_ansi "$OUTPUT" | tail -n 1)" "cache 42% cold 45k x2 tools" "a compact cold cache drops the re-cache words"
 
 new_case full-at-100-columns
 write_usage_json "$RUNTIME_DIR/statusline-usage-cache.json" "$COMPACT_USAGE"
@@ -983,7 +983,7 @@ assert_contains "$(strip_ansi "$OUTPUT")" "extra \$87.25 used · unlimited reset
   "an unlimited cap shows the billing reset in the full form"
 
 # Shorter dir/branch caps apply only where they keep the dir segment on the
-# model/context/cache row, or where the full-cap segment overflows a row of its own.
+# model/context row, or where the full-cap segment overflows a row of its own.
 LONG_BRANCH="feature/very-long-branch-name-for-testing-caps"
 new_case line1-full-caps
 FAKE_GIT_BRANCH="$LONG_BRANCH"
@@ -999,14 +999,14 @@ run_statusline "$(base_input)"
 assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ repo (feature/v…ting-caps)" \
   "tighter caps keep line 1 on one row when that makes it fit"
 
-# The prompt cache segment shares line 1, so it counts toward the cap decision:
-# at 82 columns (78 usable) only the tighter caps fit beside it.
+# The prompt cache segment is on line 2, so it does not count toward the line 1
+# cap decision: at 82 columns (78 usable) the full caps fit.
 new_case line1-refit-with-cache
 FAKE_GIT_BRANCH="$LONG_BRANCH"
 TEST_COLUMNS=82
 run_statusline "$(base_input | "$REAL_JQ" -c '.prompt_cache = {caching_observed: true, warm: false, expires_at: null, hit_ratio: 0.42, misses: 0, recache_tokens_if_cold: 0}')"
-assert_equal "$(strip_ansi "$OUTPUT")" "Claude Opus high │ 42% 6k/200k │ cache 42% cold │ repo (feature/v…ting-caps)" \
-  "the cache segment counts toward the line 1 cap decision"
+assert_equal "$(strip_ansi "$OUTPUT")" "$(printf '%s\n' "Claude Opus high │ 42% 6k/200k │ repo (feature/very-…-testing-caps)" "" "cache 42% cold")" \
+  "the cache segment does not count toward the line 1 cap decision"
 
 new_case line1-wrap-keeps-caps
 FAKE_GIT_BRANCH="$LONG_BRANCH"
@@ -1074,7 +1074,7 @@ run_statusline "$WARM_INPUT"
 PLAIN="$(strip_ansi "$OUTPUT")"
 assert_contains "$PLAIN" "current ══════ 11%" "wide terminal keeps full-width usage bars"
 assert_equal "$(printf '%s\n' "$PLAIN" | wc -l | tr -d ' ')" "3" "wide terminal keeps line 2 on one row"
-assert_contains "$PLAIN" "│ cache 91%" "wide terminal joins the cache segment with a separator"
+assert_contains "$PLAIN" "cache 91% in 52m │ current" "wide terminal joins the cache segment to the usage windows with a separator"
 
 # Subagent rows gain the model family and a non-inherited effort badge.
 new_case subagent-rows
