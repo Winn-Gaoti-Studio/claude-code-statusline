@@ -3,3 +3,6 @@
 *~
 .idea/
 .vscode/
+# Claude Code writes these files when it loads the mod.
+mod/.claude-plugin/types/
+mod/tsconfig.json

@@ -7,7 +7,11 @@ Docs and Git commits must be in English. Respond to users in Simplified Chinese.
 This public repository is the canonical source for the portable Claude Code status-line bundle:
 
 - `statusline.sh` renders the main status line.
-- `subagent-statusline.sh` renders rows in the subagent panel.
+- `subagent-statusline.sh` renders rows in the subagent panel through the
+  deprecated `subagentStatusLine` setting.
+- `mod/` is the `subagent-rows` Claude Code mod. It renders the same rows
+  through an `AgentRow` render hook. A change to the row format must change
+  both renderers.
 - `lib/statusline-cache.sh` owns OAuth lookup, usage refresh, and locking.
 
 The shared harness consumes this repository as a submodule at
@@ -23,7 +27,9 @@ bash tests/check.sh
 
 The check script validates Bash syntax, the full runtime behavior suite, the
 render smoke test, and installer/uninstaller behavior using synthetic home
-directories. The old context handoff was removed from the canonical runtime;
+directories. It also compares the rows of the `mod/` subagent mod with the rows
+of `subagent-statusline.sh` (Node 22.7 or later). For a change to the mod, also
+do `claude plugin validate mod` and `claude plugin test mod`. The old context handoff was removed from the canonical runtime;
 do not reintroduce it to satisfy a stale test.
 
 ## Runtime Invariants

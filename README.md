@@ -13,7 +13,10 @@ The bundle and its tests work independently of those repositories.
 ## Components
 
 - `statusline.sh` renders the main Claude Code status line.
-- `subagent-statusline.sh` renders one custom row per subagent.
+- `mod/` is the `subagent-rows` Claude Code mod. It renders one custom row per
+  subagent.
+- `subagent-statusline.sh` renders the same rows through the deprecated
+  `subagentStatusLine` setting.
 - `lib/statusline-cache.sh` performs non-blocking usage refresh, credential
   lookup, and locking.
 
@@ -129,12 +132,45 @@ Add these settings to `~/.claude/settings.json`:
 }
 ```
 
+## Subagent rows mod
+
+Claude Code deprecated `subagentStatusLine` in favor of mods. The
+`subagent-rows` mod in `mod/` gives the same rows through an `AgentRow` render
+hook. The installer above still uses `subagentStatusLine`. The `AgentRow`
+hook needs Claude Code 2.1.326 or later. On an earlier version, keep
+`subagentStatusLine`.
+
+To use the mod, copy the `mod/` directory to a local directory. Then name that
+directory in the `env` block of `~/.claude/settings.json`, and remove
+`subagentStatusLine`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/subagent-rows"
+  }
+}
+```
+
+Claude Code does not give the mod the row of a workflow. That row keeps the
+default format.
+
 ## Development
 
 Run all checks from this repository:
 
 ```bash
 bash tests/check.sh
+```
+
+`tests/subagent-mod.parity.sh` compares the rows of the mod with the rows of
+`subagent-statusline.sh`. It needs a Node version that can import TypeScript
+with `--experimental-strip-types` (Node 22.7 or later). For a change to the mod,
+also do these commands:
+
+```bash
+claude plugin validate mod
+claude plugin test mod
 ```
 
 The suite uses synthetic home directories and fake credential and network

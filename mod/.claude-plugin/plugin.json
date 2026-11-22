@@ -1,0 +1,5 @@
+{
+  "name": "subagent-rows",
+  "version": "0.1.0",
+  "description": "Custom subagent panel rows: name, description, model family, effort, and context use."
+}
