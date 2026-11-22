@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-statusline",
+  "owner": { "name": "Terrence Tang" },
+  "description": "Claude Code mods from the claude-code-statusline bundle.",
+  "plugins": [
+    {
+      "name": "subagent-rows",
+      "source": "./mod",
+      "description": "Custom subagent panel rows: name, description, model family, effort, and context use."
+    }
+  ]
+}
