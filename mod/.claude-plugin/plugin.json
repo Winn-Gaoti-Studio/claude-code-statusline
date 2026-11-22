@@ -1,5 +1,11 @@
 {
   "name": "subagent-rows",
   "version": "0.1.0",
-  "description": "Custom subagent panel rows: name, description, model family, effort, and context use."
+  "description": "Custom subagent panel rows: name, description, model family, effort, and context use.",
+  "author": { "name": "Terrence Tang" },
+  "homepage": "https://github.com/Winn-Gaoti-Studio/claude-code-statusline#subagent-rows-mod",
+  "repository": "https://github.com/Winn-Gaoti-Studio/claude-code-statusline",
+  "license": "MIT",
+  "keywords": ["statusline", "subagent", "agent-row", "mod"],
+  "icon": "./.claude-plugin/icon.png"
 }

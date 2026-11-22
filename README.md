@@ -140,9 +140,29 @@ hook. The installer above still uses `subagentStatusLine`. The `AgentRow`
 hook needs Claude Code 2.1.326 or later. On an earlier version, keep
 `subagentStatusLine`.
 
-To use the mod, copy the `mod/` directory to a local directory. Then name that
-directory in the `env` block of `~/.claude/settings.json`, and remove
-`subagentStatusLine`:
+This repository is a Claude Code plugin marketplace. To install the mod, type
+this line at the prompt of a Claude Code terminal session:
+
+```text
+/plugin install subagent-rows --marketplace Winn-Gaoti-Studio/claude-code-statusline
+```
+
+Answer `y` to add the marketplace, then select a scope (the user scope is the
+first). From a shell, use this command:
+
+```bash
+claude plugin install subagent-rows --marketplace Winn-Gaoti-Studio/claude-code-statusline
+```
+
+In the desktop app, click + next to the prompt box, then Plugins. Add the
+marketplace `Winn-Gaoti-Studio/claude-code-statusline`, then add the plugin.
+
+After the installation, remove `subagentStatusLine` from
+`~/.claude/settings.json`.
+
+To load the mod without an installation, copy the `mod/` directory to a local
+directory. Then name that directory in the `env` block of
+`~/.claude/settings.json`, and remove `subagentStatusLine`:
 
 ```json
 {

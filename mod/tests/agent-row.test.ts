@@ -1,6 +1,7 @@
+import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-const ROW = {
+const ROW: RenderPropsOf['AgentRow'] = {
   id: 'a1',
   rowIds: ['a1'],
   columns: 100,
@@ -19,7 +20,8 @@ const ROW = {
   tokenCount: 34000,
   tokenSamples: [34000],
   hasRow: true,
-} as const
+  isHidden: false,
+}
 
 const plain = (text: string | undefined) => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '')
 
